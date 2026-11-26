@@ -21,6 +21,10 @@ final class AssistantAgent implements Agent, Conversational, HasTools
 {
     use Promptable;
 
+    private const SEARCH_SINGLE_RECORD = 'single_record';
+
+    private const SEARCH_BROWSE = 'browse';
+
     /** @var array<string, mixed>|null */
     private ?array $draft = null;
 
@@ -109,21 +113,33 @@ final class AssistantAgent implements Agent, Conversational, HasTools
                 fn (JsonSchema $schema): array => [
                     'resource' => $this->currentList === null ? $schema->string()->required() : $schema->string(),
                     'query' => $schema->string()->required(),
+                    'purpose' => $schema->string()
+                        ->enum([self::SEARCH_SINGLE_RECORD, self::SEARCH_BROWSE])
+                        ->description('Use single_record when the user needs one exact target, including “can I delete or edit this record?” Use browse only when the user wants a list of matches.')
+                        ->required(),
                 ],
                 function (Request $request): array {
                     $args = $request->validate([
                         'resource' => $this->currentList === null ? 'required|string|max:150' : 'sometimes|string|max:150',
                         'query' => 'required|string|max:100',
+                        'purpose' => 'sometimes|in:'.self::SEARCH_SINGLE_RECORD.','.self::SEARCH_BROWSE,
                     ]);
                     $resource = $args['resource'] ?? $this->currentList['resource'];
 
                     $records = $this->resources->search($resource, $args['query']);
                     $this->searchMatches[$resource] = $records;
 
-                    return ['resource' => $resource, 'records' => $records];
+                    $result = ['resource' => $resource, 'records' => $records];
+
+                    if (($args['purpose'] ?? null) === self::SEARCH_SINGLE_RECORD && ! $this->recordExplicitlyChosen
+                        && $this->recordChoice === null && $this->draft === null && $this->offerRecordChoice($resource)) {
+                        $result['next_tool'] = ['name' => 'ask_record_choice', 'arguments' => ['resource' => $resource]];
+                    }
+
+                    return $result;
                 },
             ),
-            new AssistantTool('ask_record_choice', 'For an ambiguous single-record target, ask the admin to choose from the latest search matches or the currently checked rows for this resource. Use this before preparing a change and stop when waiting_for_user is true. Do not call it for a search-only list unless the user must pick a target.',
+            new AssistantTool('ask_record_choice', 'Show clickable record choices. You must call this before any reply or draft when search_records returns next_tool for an ambiguous single-record request, or when the user must choose between several checked rows. Do not ask the user to choose in plain text. Stop when waiting_for_user is true. Do not call this for a browse-only list.',
                 fn (JsonSchema $schema): array => ['resource' => $schema->string()->required()],
                 function (Request $request): array {
                     $args = $request->validate(['resource' => 'required|string|max:150']);

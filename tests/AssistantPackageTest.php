@@ -429,12 +429,53 @@ final class AssistantPackageTest extends TestCase
         $this->assertNotNull($second->fresh());
     }
 
+    public function test_single_record_search_requests_the_choice_tool_for_multiple_matches(): void
+    {
+        Entry::query()->create(['name' => 'Shared name A']);
+        Entry::query()->create(['name' => 'Shared name B']);
+        $agent = app(AssistantAgent::class);
+        $search = collect($agent->tools())->first(fn ($tool): bool => $tool->name() === 'search_records');
+
+        $result = json_decode($search->handle(new ToolRequest([
+            'resource' => 'entries', 'query' => 'Shared name', 'purpose' => 'single_record',
+        ])), true);
+
+        $this->assertSame([
+            'name' => 'ask_record_choice',
+            'arguments' => ['resource' => 'entries'],
+        ], $result['next_tool']);
+    }
+
+    public function test_chat_shows_buttons_if_the_model_replies_in_text_after_an_ambiguous_single_record_search(): void
+    {
+        $first = Entry::query()->create(['name' => 'ايمن الأول']);
+        $second = Entry::query()->create(['name' => 'ايمن الثاني']);
+        app()->setLocale('ar');
+        AssistantAgent::fake([
+            new ToolCall('find', 'search_records', ['resource' => 'entries', 'query' => 'ايمن', 'purpose' => 'single_record']),
+            'أرسل اسم السائق الذي تقصده.',
+        ])->preventStrayPrompts();
+
+        Livewire::test(AssistantChat::class)
+            ->set('message', 'هل يمكن حذف السائق ايمن؟')
+            ->call('send')
+            ->assertHasNoErrors()
+            ->assertSee('اختر السجل المقصود')
+            ->assertSee($first->name)
+            ->assertSee($second->name)
+            ->assertDontSee('أرسل اسم السائق الذي تقصده.')
+            ->assertSet('draft', null);
+
+        $this->assertModelExists($first);
+        $this->assertModelExists($second);
+    }
+
     public function test_search_can_return_multiple_records_without_asking_the_user_to_choose(): void
     {
         Entry::query()->create(['name' => 'Shared name A']);
         Entry::query()->create(['name' => 'Shared name B']);
         AssistantAgent::fake([
-            new ToolCall('find', 'search_records', ['resource' => 'entries', 'query' => 'Shared name']),
+            new ToolCall('find', 'search_records', ['resource' => 'entries', 'query' => 'Shared name', 'purpose' => 'browse']),
             'I found Shared name A and Shared name B.',
         ])->preventStrayPrompts();
 
