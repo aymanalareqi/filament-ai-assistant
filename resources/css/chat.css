@@ -1,0 +1,16 @@
+.fia-chat { max-inline-size: 54rem; margin-inline: auto; }
+.fia-messages { display: grid; gap: .75rem; margin-block-end: 1rem; max-block-size: 34rem; overflow: auto; }
+.fia-message, .fia-draft { background: color-mix(in srgb, currentColor 5%, transparent); border-radius: .75rem; padding: .875rem 1rem; }
+.fia-message { inline-size: fit-content; max-inline-size: 88%; overflow-wrap: anywhere; }
+.fia-message-user { justify-self: end; }
+.fia-message > div { white-space: pre-wrap; }
+.fia-message > strong, .fia-change small { display: block; font-size: .8em; opacity: .75; }
+.fia-draft, .fia-compose, .fia-draft dl { display: grid; gap: .75rem; }
+.fia-draft { margin-block-end: 1rem; }
+.fia-draft > .fi-btn { justify-self: start; }
+.fia-change { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: .25rem .75rem; overflow-wrap: anywhere; }
+.fia-change dt { grid-column: 1 / -1; font-weight: 600; }
+.fia-compose textarea { inline-size: 100%; resize: vertical; padding: .75rem; border: 1px solid color-mix(in srgb, currentColor 28%, transparent); border-radius: .5rem; background: transparent; }
+.fia-actions { display: flex; flex-wrap: wrap; gap: .65rem; align-items: center; }
+.fia-error { color: var(--danger-600, #b42318); }
+.dark .fia-error { color: var(--danger-400, #fda29b); }
