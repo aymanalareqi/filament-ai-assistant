@@ -310,6 +310,118 @@ final class AssistantPackageTest extends TestCase
             ->assertDontSee('Open review form');
     }
 
+    public function test_chat_pauses_when_a_draft_targets_ambiguous_search_results_then_resumes_for_the_chosen_record(): void
+    {
+        $first = Entry::query()->create(['name' => 'Shared name A']);
+        $second = Entry::query()->create(['name' => 'Shared name B']);
+        $other = Entry::query()->create(['name' => 'Unrelated']);
+        $message = 'Rename Shared name to New name';
+        $prepare = fn (Entry $entry): ToolCall => new ToolCall('prepare-'.$entry->id, 'prepare_change', [
+            'resource' => 'entries',
+            'operation' => 'edit',
+            'record_id' => (string) $entry->id,
+            'changes' => [['field' => 'name', 'value' => 'New name']],
+        ]);
+
+        AssistantAgent::fake([
+            new ToolCall('find', 'search_records', ['resource' => 'entries', 'query' => 'Shared name']),
+            $prepare($first),
+            'Draft prepared',
+            new ToolCall('chosen', 'current_record', []),
+            $prepare($first),
+            $prepare($second),
+            'Draft prepared',
+        ])->preventStrayPrompts();
+
+        $chat = Livewire::test(AssistantChat::class)
+            ->set('message', $message)
+            ->call('send')
+            ->assertHasNoErrors()
+            ->assertSee('Choose the correct record')
+            ->assertSee('Shared name A')
+            ->assertSee('Shared name B')
+            ->assertDontSee('Unrelated')
+            ->assertSet('draft', null);
+        $choiceId = $chat->get('recordChoice')['id'];
+
+        Livewire::test(AssistantChat::class)
+            ->assertSee('Choose the correct record')
+            ->call('chooseRecord', 'stale-choice', (string) $second->id)
+            ->assertHasErrors('message')
+            ->call('chooseRecord', $choiceId, (string) $other->id)
+            ->assertHasErrors('message')
+            ->set('message', 'Delete something else')
+            ->call('send')
+            ->assertSee('Choose a record or cancel')
+            ->assertSet('draft', null)
+            ->call('chooseRecord', $choiceId, (string) $second->id)
+            ->assertHasNoErrors()
+            ->assertSet('recordChoice', null)
+            ->assertSee('Open review form')
+            ->assertSee('Selected Shared name B')
+            ->assertSeeHtml('/entries/'.$second->id.'/edit?assistantDraft=');
+
+        AssistantAgent::assertPrompted(function (AgentPrompt $prompt) use ($message, $second): bool {
+            $tool = collect($prompt->agent->tools())->first(fn ($tool): bool => $tool->name() === 'current_record');
+            $record = $tool ? json_decode($tool->handle(new ToolRequest), true)['record'] : null;
+
+            return $prompt->contains($message) && ($record['record_id'] ?? null) === (string) $second->id;
+        });
+        $this->assertSame('Shared name A', $first->fresh()->name);
+        $this->assertSame('Shared name B', $second->fresh()->name);
+    }
+
+    public function test_chat_can_ask_a_record_question_and_cancel_it_if_resource_access_is_revoked(): void
+    {
+        Entry::query()->create(['name' => 'Shared name A']);
+        $second = Entry::query()->create(['name' => 'Shared name B']);
+        AssistantAgent::fake([
+            new ToolCall('find', 'search_records', ['resource' => 'entries', 'query' => 'Shared name']),
+            new ToolCall('clarify', 'ask_record_choice', ['resource' => 'entries']),
+            new ToolCall('delete', 'prepare_action', ['resource' => 'entries', 'operation' => 'delete', 'record_id' => (string) $second->id]),
+            'Which one?',
+        ])->preventStrayPrompts();
+
+        $chat = Livewire::test(AssistantChat::class)
+            ->set('message', 'Delete Shared name')
+            ->call('send')
+            ->assertSee('Choose the correct record')
+            ->assertSet('draft', null);
+        $choiceId = $chat->get('recordChoice')['id'];
+
+        FilamentAiAssistantPlugin::current()->allowResourceUsing(fn (string $resource): bool => $resource !== EntryResource::class);
+
+        $chat->call('chooseRecord', $choiceId, (string) $second->id)
+            ->assertSee('This record is no longer available.')
+            ->call('cancelRecordChoice', $choiceId)
+            ->assertHasNoErrors()
+            ->assertSet('recordChoice', null)
+            ->assertSee('Request cancelled. No changes were made.');
+
+        Livewire::test(AssistantChat::class)
+            ->call('chooseRecord', $choiceId, (string) $second->id)
+            ->assertHasErrors('message')
+            ->assertSet('draft', null);
+        $this->assertNotNull($second->fresh());
+    }
+
+    public function test_search_can_return_multiple_records_without_asking_the_user_to_choose(): void
+    {
+        Entry::query()->create(['name' => 'Shared name A']);
+        Entry::query()->create(['name' => 'Shared name B']);
+        AssistantAgent::fake([
+            new ToolCall('find', 'search_records', ['resource' => 'entries', 'query' => 'Shared name']),
+            'I found Shared name A and Shared name B.',
+        ])->preventStrayPrompts();
+
+        Livewire::test(AssistantChat::class)
+            ->set('message', 'List records named Shared name')
+            ->call('send')
+            ->assertSee('I found Shared name A and Shared name B.')
+            ->assertSet('recordChoice', null)
+            ->assertSet('draft', null);
+    }
+
     public function test_numeric_search_finds_exact_codes_and_database_ids(): void
     {
         $idMatch = Entry::query()->create(['id' => 123, 'name' => 'ID match']);

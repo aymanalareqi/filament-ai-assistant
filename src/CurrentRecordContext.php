@@ -58,9 +58,19 @@ final class CurrentRecordContext
                 return null;
             }
 
-            $resource = $this->resources->resource($context['resource']);
-            $record = $this->resources->record($resource, $context['record']);
-        } catch (DecryptException|JsonException|ValidationException) {
+            return $this->forRecord($context['resource'], $context['record']);
+        } catch (DecryptException|JsonException) {
+            return null;
+        }
+    }
+
+    /** @return array{resource: string, record_id: string, resource_label: string, record_label: string, can_edit: bool}|null */
+    public function forRecord(string $slug, string $recordId): ?array
+    {
+        try {
+            $resource = $this->resources->resource($slug);
+            $record = $this->resources->record($resource, $recordId);
+        } catch (ValidationException) {
             return null;
         }
 
@@ -70,7 +80,7 @@ final class CurrentRecordContext
         }
 
         return [
-            'resource' => $context['resource'],
+            'resource' => $slug,
             'record_id' => (string) $record->getKey(),
             'resource_label' => $resource::getModelLabel(),
             'record_label' => $this->recordLabel($resource, $record),

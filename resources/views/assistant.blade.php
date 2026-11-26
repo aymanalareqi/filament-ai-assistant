@@ -153,6 +153,33 @@
                 </div>
             @endif
 
+            @if ($recordChoice)
+                <div class="fia-draft" wire:key="fia-choice-{{ $recordChoice['id'] }}" role="group"
+                    aria-labelledby="fia-choice-title-{{ $this->getId() }}">
+                    <div class="fia-draft-heading">
+                        <span class="fia-draft-mark" aria-hidden="true">
+                            <x-filament::icon icon="heroicon-o-magnifying-glass" class="fia-icon" />
+                        </span>
+                        <div>
+                            <h3 id="fia-choice-title-{{ $this->getId() }}">{{ __('filament-ai-assistant::assistant.choice.title') }}</h3>
+                        </div>
+                    </div>
+                    <div class="fia-choices">
+                        @foreach ($recordChoice['candidates'] as $candidate)
+                            <button type="button" class="fia-prompt" data-choice="{{ $recordChoice['id'] }}" data-record="{{ $candidate['id'] }}"
+                                x-on:click="$wire.chooseRecord($el.dataset.choice, $el.dataset.record)" wire:loading.attr="disabled">
+                                <span dir="auto">{{ $candidate['label'] }}</span>
+                                <small dir="ltr">#{{ $candidate['id'] }}</small>
+                            </button>
+                        @endforeach
+                    </div>
+                    <button type="button" class="fia-record-toggle" data-choice="{{ $recordChoice['id'] }}"
+                        x-on:click="$wire.cancelRecordChoice($el.dataset.choice)" wire:loading.attr="disabled">
+                        {{ __('filament-ai-assistant::assistant.choice.cancel') }}
+                    </button>
+                </div>
+            @endif
+
             @if ($draft)
                 @php($isAction = ($draft['kind'] ?? null) === 'action')
                 <div class="fia-draft">
@@ -199,7 +226,7 @@
                 </div>
             @endif
 
-            <div class="fia-thinking" role="status" wire:loading.flex wire:target="send">
+            <div class="fia-thinking" role="status" wire:loading.flex wire:target="send, chooseRecord">
                 <span class="fia-dots" aria-hidden="true"><i></i><i></i><i></i></span>
                 <span>{{ __('filament-ai-assistant::assistant.working') }}</span>
             </div>
@@ -210,8 +237,10 @@
                 <label class="fia-sr-only" for="fia-message-{{ $this->getId() }}">{{ __('filament-ai-assistant::assistant.message') }}</label>
                 <textarea id="fia-message-{{ $this->getId() }}" x-ref="message" wire:model="message"
                     wire:loading.attr="readonly" wire:target="send" rows="2" maxlength="2000" dir="auto"
+                    @disabled($recordChoice !== null)
                     placeholder="{{ __('filament-ai-assistant::assistant.placeholder') }}" @error('message') aria-invalid="true" aria-describedby="fia-error-{{ $this->getId() }}" @enderror></textarea>
-                <button type="submit" class="fia-send" wire:loading.attr="disabled" x-bind:disabled="sending"
+                <button type="submit" class="fia-send" wire:loading.attr="disabled"
+                    x-bind:disabled="sending || Boolean($wire.recordChoice)" @disabled($recordChoice !== null)
                     title="{{ __('filament-ai-assistant::assistant.send') }}" aria-label="{{ __('filament-ai-assistant::assistant.send') }}">
                     <x-filament::icon icon="heroicon-o-arrow-up" class="fia-icon" aria-hidden="true" />
                 </button>

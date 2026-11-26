@@ -30,6 +30,14 @@ return [
     'review_note' => 'Changes are only saved after you review them.',
     'yes' => 'Yes',
     'no' => 'No',
+    'choice' => [
+        'title' => 'Choose the correct record',
+        'prompt' => 'I found several matching records. Which one did you mean?',
+        'cancel' => 'Cancel selection',
+        'cancelled_user' => 'Cancel this request',
+        'cancelled' => 'Request cancelled. No changes were made.',
+        'selected' => 'Selected :record (#:id)',
+    ],
     'actions' => [
         'use_selection' => 'Use selection in assistant',
         'selection' => ':resource (:count)',
@@ -47,6 +55,9 @@ return [
         'incomplete' => 'Action completed for :success of :total records.',
     ],
     'errors' => [
+        'choice_pending' => 'Choose a record or cancel the selection before sending another message.',
+        'choose_listed_record' => 'This option is not available. Choose one of the records shown.',
+        'choice_unavailable' => 'This record is no longer available. Choose another record or cancel and search again.',
         'current_record_unavailable' => 'This record is no longer available. Reopen its page or detach it to continue.',
         'action_unavailable' => 'This action is not available for these records.',
         'selection_required' => 'Select the rows in this resource’s table and choose “Use selection in assistant”.',

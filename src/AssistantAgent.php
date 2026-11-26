@@ -4,6 +4,7 @@ namespace Alareqi\FilamentAiAssistant;
 
 use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Illuminate\Support\Facades\Config;
+use Illuminate\Validation\ValidationException;
 use Laravel\Ai\Attributes\MaxSteps;
 use Laravel\Ai\Attributes\MaxTokens;
 use Laravel\Ai\Contracts\Agent;
@@ -23,6 +24,12 @@ final class AssistantAgent implements Agent, Conversational, HasTools
     /** @var array<string, mixed>|null */
     private ?array $draft = null;
 
+    /** @var array<string, list<array{id: string, label: string, can_edit: bool}>> */
+    private array $searchMatches = [];
+
+    /** @var array{resource: string, candidates: list<array{id: string, label: string}>}|null */
+    private ?array $recordChoice = null;
+
     /**
      * @param  list<array{role: string, text: string}>  $history
      * @param  array{resource: string, record_id: string, resource_label: string, record_label: string, can_edit: bool}|null  $currentRecord
@@ -32,11 +39,16 @@ final class AssistantAgent implements Agent, Conversational, HasTools
         private DraftStore $drafts,
         private array $history = [],
         private ?array $currentRecord = null,
+        private bool $recordExplicitlyChosen = false,
     ) {}
 
     public function instructions(): string
     {
         $instructions = FilamentAiAssistantPlugin::current()?->getInstructions() ?? Config::string('filament-ai-assistant.instructions');
+
+        if ($this->recordExplicitlyChosen) {
+            return $instructions."\n\nThe user already chose the exact record for this request. Call current_record for that selection, then continue the original request. Do not ask them to choose again or prepare a change for any other record.";
+        }
 
         if ($this->currentRecord === null) {
             return $instructions;
@@ -58,13 +70,19 @@ final class AssistantAgent implements Agent, Conversational, HasTools
         return $this->draft;
     }
 
+    /** @return array{resource: string, candidates: list<array{id: string, label: string}>}|null */
+    public function recordChoice(): ?array
+    {
+        return $this->recordChoice;
+    }
+
     public function tools(): iterable
     {
         $actions = app(ActionProposalStore::class);
 
         return [
             ...($this->currentRecord === null ? [] : [
-                new AssistantTool('current_record', 'Identify the exact authorized record attached from the page for this message. Does not change anything.',
+                new AssistantTool('current_record', 'Identify the exact authorized record chosen by the user or attached from the page for this message. Does not change anything.',
                     fn (JsonSchema $schema): array => [],
                     fn (): array => ['record' => $this->currentRecord],
                 ),
@@ -81,7 +99,24 @@ final class AssistantAgent implements Agent, Conversational, HasTools
                 function (Request $request): array {
                     $args = $request->validate(['resource' => 'required|string|max:150', 'query' => 'required|string|max:100']);
 
-                    return ['records' => $this->resources->search($args['resource'], $args['query'])];
+                    $records = $this->resources->search($args['resource'], $args['query']);
+                    $this->searchMatches[$args['resource']] = $records;
+
+                    return ['records' => $records];
+                },
+            ),
+            new AssistantTool('ask_record_choice', 'For an ambiguous single-record target, ask the admin to choose from multiple authorized matches from the latest search_records call for this resource. Use this before preparing a change and stop when waiting_for_user is true. Do not call it for a search-only list unless the user must pick a target.',
+                fn (JsonSchema $schema): array => ['resource' => $schema->string()->required()],
+                function (Request $request): array {
+                    $args = $request->validate(['resource' => 'required|string|max:150']);
+
+                    return match (true) {
+                        $this->recordChoice !== null => ['waiting_for_user' => true],
+                        $this->draft !== null => ['prepared' => true],
+                        $this->recordExplicitlyChosen => ['record_already_chosen' => true],
+                        $this->offerRecordChoice($args['resource']) => ['waiting_for_user' => true],
+                        default => ['error' => 'Search for multiple candidate records first.'],
+                    };
                 },
             ),
             new AssistantTool('describe_form', 'Describe fields and current values for the native Filament create or edit form. Omitted fields are not supported by this assistant.',
@@ -115,6 +150,10 @@ final class AssistantAgent implements Agent, Conversational, HasTools
                         'changes.*.value' => 'present|nullable|string|max:6000',
                     ]);
 
+                    if ($this->waitsForRecordChoice($args['resource'], $args['operation'] === 'edit' ? $args['record_id'] : null)) {
+                        return ['waiting_for_user' => true];
+                    }
+
                     $this->draft = $this->drafts->prepare($args['resource'], $args['operation'], $args['record_id'] ?? null, $args['changes']);
 
                     return ['prepared' => true, 'fields' => array_column($this->draft['fields'], 'label')];
@@ -141,12 +180,48 @@ final class AssistantAgent implements Agent, Conversational, HasTools
                         'record_id' => 'required_if:operation,delete|prohibited_unless:operation,delete|nullable|string|max:100',
                     ]);
 
+                    if ($this->waitsForRecordChoice($args['resource'], $args['record_id'] ?? null)) {
+                        return ['waiting_for_user' => true];
+                    }
+
                     $this->draft = $actions->prepare($args['resource'], $args['operation'], $args['record_id'] ?? null);
 
                     return ['prepared' => true, 'records' => count($this->draft['records'])];
                 },
             ),
         ];
+    }
+
+    private function offerRecordChoice(string $resource): bool
+    {
+        $matches = $this->searchMatches[$resource] ?? [];
+
+        if (count($matches) < 2) {
+            return false;
+        }
+
+        $this->recordChoice = [
+            'resource' => $resource,
+            'candidates' => array_map(fn (array $match): array => ['id' => $match['id'], 'label' => $match['label']], $matches),
+        ];
+
+        return true;
+    }
+
+    private function waitsForRecordChoice(string $resource, ?string $recordId): bool
+    {
+        if ($this->recordChoice !== null) {
+            return true;
+        }
+
+        $matchesExactRecord = $resource === ($this->currentRecord['resource'] ?? null)
+            && $recordId === ($this->currentRecord['record_id'] ?? null);
+
+        if ($this->recordExplicitlyChosen && ! $matchesExactRecord) {
+            throw ValidationException::withMessages(['record_id' => __('filament-ai-assistant::assistant.errors.choose_listed_record')]);
+        }
+
+        return $recordId !== null && ! $matchesExactRecord && $this->offerRecordChoice($resource);
     }
 
     private function targetSchema(JsonSchema $schema): array

@@ -277,6 +277,11 @@
 .fia-draft-mark { inline-size: 2.125rem; block-size: 2.125rem; border-radius: .625rem; }
 .fia-draft-heading p { color: var(--fia-accent); font-size: .75rem; font-weight: 650; }
 .fia-draft-heading h3 { color: var(--fia-heading); font-weight: 700; overflow-wrap: anywhere; }
+.fia-choices { display: grid; gap: .375rem; }
+.fia-choices small { color: var(--fia-muted); font-size: .75rem; }
+.fia-choices .fia-prompt span { min-inline-size: 0; overflow-wrap: anywhere; }
+.fia-draft > .fia-record-toggle { justify-self: start; }
+.fia-choices .fia-prompt:disabled, .fia-draft > .fia-record-toggle:disabled, .fia-send:disabled { opacity: .55; cursor: not-allowed; }
 .fia-changes { display: grid; gap: .625rem; }
 
 .fia-change {
