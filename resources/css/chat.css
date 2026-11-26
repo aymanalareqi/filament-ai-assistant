@@ -143,6 +143,23 @@
 
 .fia-tool:not(:disabled):hover { background: var(--fia-canvas); color: var(--fia-heading); }
 
+.fia-selection {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    padding-inline: 1rem .75rem;
+    background: var(--fia-tint);
+    color: var(--fia-accent);
+    border-block-end: 1px solid var(--fia-line);
+    font-size: .875rem;
+}
+
+.fia-selection > span { flex: 1; }
+.fia-action-records { display: grid; gap: .375rem; }
+.fia-action-records li { display: flex; justify-content: space-between; gap: .5rem; overflow-wrap: anywhere; }
+.fia-action-records small { color: var(--fia-muted); }
+.fia-action-warning { padding: .5rem; border-radius: .5rem; background: var(--fia-tint); color: var(--fia-heading); }
+
 .fia-thread {
     flex: 1 1 auto;
     min-block-size: 0;

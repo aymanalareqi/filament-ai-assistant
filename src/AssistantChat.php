@@ -23,9 +23,13 @@ final class AssistantChat extends Component
     #[Locked]
     public array $history = [];
 
-    /** @var array{id: string, url: string, label: string, fields: array}|null */
+    /** @var array<string, mixed>|null */
     #[Locked]
     public ?array $draft = null;
+
+    /** @var array<string, mixed>|null */
+    #[Locked]
+    public ?array $selection = null;
 
     public static function canAccess(): bool
     {
@@ -56,6 +60,19 @@ final class AssistantChat extends Component
     {
         $this->authorizeConversation();
         $this->restoreConversation($drafts);
+    }
+
+    public function refreshSelection(ActionProposalStore $actions): void
+    {
+        $this->authorizeConversation();
+        $this->selection = $actions->selection();
+    }
+
+    public function clearSelection(ActionProposalStore $actions): void
+    {
+        $this->authorizeConversation();
+        $actions->clearSelection();
+        $this->selection = null;
     }
 
     public function send(ResourceRegistry $resources, DraftStore $drafts): void
@@ -96,7 +113,7 @@ final class AssistantChat extends Component
         $this->draft = $agent->draft();
         $text = $this->draft === null
             ? Str::limit($response->text, 4000)
-            : __('filament-ai-assistant::assistant.prepared');
+            : __('filament-ai-assistant::assistant.'.(($this->draft['kind'] ?? null) === 'action' ? 'actions.prepared' : 'prepared'));
         $this->history = array_slice([
             ...$this->history,
             ['role' => 'user', 'text' => $this->message],
@@ -148,7 +165,10 @@ final class AssistantChat extends Component
         $conversation = session()->get($this->conversationKey(), []);
         $this->history = $conversation['history'] ?? [];
         $draft = $conversation['draft'] ?? null;
-        $this->draft = $draft !== null && $drafts->isPending($draft['id']) ? $draft : null;
+        $actions = app(ActionProposalStore::class);
+        $store = ($draft['kind'] ?? null) === 'action' ? $actions : $drafts;
+        $this->draft = $draft !== null && $store->isPending($draft['id']) ? $draft : null;
+        $this->selection = $actions->selection();
     }
 
     private function conversationKey(): string

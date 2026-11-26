@@ -4,6 +4,7 @@ namespace Alareqi\FilamentAiAssistant;
 
 use Filament\Resources\Pages\CreateRecord;
 use Filament\Resources\Pages\EditRecord;
+use Filament\Resources\Pages\ListRecords;
 use Filament\Support\Assets\Css;
 use Filament\Support\Facades\FilamentAsset;
 use Illuminate\Support\ServiceProvider;
@@ -33,6 +34,14 @@ final class FilamentAiAssistantServiceProvider extends ServiceProvider
 
         // The native resource page has mounted and authorized the record before rendering its form.
         Livewire::listen('render', static function (Component $component): void {
+            $actionId = request()->query('assistantAction');
+            if (($component instanceof ListRecords || $component instanceof EditRecord)
+                && is_string($actionId) && Str::isUuid($actionId)) {
+                app(ActionProposalStore::class)->open($component, $actionId);
+
+                return;
+            }
+
             if (! $component instanceof CreateRecord && ! $component instanceof EditRecord) {
                 return;
             }
@@ -43,7 +52,31 @@ final class FilamentAiAssistantServiceProvider extends ServiceProvider
             }
         });
 
-        Livewire::listen('call', static function (Component $component, string $method): ?callable {
+        Livewire::listen('call', static function (Component $component, string $method, array $parameters): ?callable {
+            if ($component instanceof ListRecords || $component instanceof EditRecord) {
+                $proposals = app(ActionProposalStore::class);
+
+                if (in_array($method, ['unmountAction', 'unmountTableBulkAction'], true)) {
+                    return static function ($result) use ($component, $proposals) {
+                        if (blank($component->mountedActions)) {
+                            $proposals->cancel($component);
+                        }
+
+                        return $result;
+                    };
+                }
+
+                if (in_array($method, ['callMountedAction', 'callMountedTableAction', 'callMountedTableBulkAction'], true)) {
+                    $proposal = $proposals->beforeConfirm($component, $parameters);
+
+                    return $proposal === null ? null : static function ($result) use ($component, $proposals, $proposal) {
+                        $proposals->afterConfirm($component, $proposal);
+
+                        return $result;
+                    };
+                }
+            }
+
             if (! (($method === 'create' && $component instanceof CreateRecord)
                 || (in_array($method, ['save', 'saveFormComponentOnly'], true) && $component instanceof EditRecord))) {
                 return null;

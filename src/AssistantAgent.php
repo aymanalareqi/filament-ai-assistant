@@ -20,7 +20,7 @@ final class AssistantAgent implements Agent, Conversational, HasTools
 {
     use Promptable;
 
-    /** @var array{id: string, url: string, label: string, fields: array}|null */
+    /** @var array<string, mixed>|null */
     private ?array $draft = null;
 
     /** @param list<array{role: string, text: string}> $history */
@@ -42,7 +42,7 @@ final class AssistantAgent implements Agent, Conversational, HasTools
         }
     }
 
-    /** @return array{id: string, url: string, label: string, fields: array}|null */
+    /** @return array<string, mixed>|null */
     public function draft(): ?array
     {
         return $this->draft;
@@ -50,6 +50,8 @@ final class AssistantAgent implements Agent, Conversational, HasTools
 
     public function tools(): iterable
     {
+        $actions = app(ActionProposalStore::class);
+
         return [
             new AssistantTool('list_resources', 'List accessible panel resources and operations. Edit permission is checked per record.',
                 fn (JsonSchema $schema): array => [],
@@ -100,6 +102,32 @@ final class AssistantAgent implements Agent, Conversational, HasTools
                     $this->draft = $this->drafts->prepare($args['resource'], $args['operation'], $args['record_id'] ?? null, $args['changes']);
 
                     return ['prepared' => true, 'fields' => array_column($this->draft['fields'], 'label')];
+                },
+            ),
+            new AssistantTool('table_selection', 'Get the records explicitly sent to the assistant from a resource table. Ask the admin to select rows and choose Use selection in assistant if there is no selection.',
+                fn (JsonSchema $schema): array => [],
+                fn (): array => ['selection' => $actions->selection()],
+            ),
+            new AssistantTool('prepare_action', 'Prepare an existing Filament action for review only. It does not run the action. For publish, unpublish, or bulk_delete, use the entire confirmed resource table selection and never supply record_id. For delete, use the exact single ID from search_records. If the target is ambiguous, ask before preparing it.',
+                fn (JsonSchema $schema): array => [
+                    'resource' => $schema->string()->required(),
+                    'operation' => $schema->string()->enum(ActionProposalStore::OPERATIONS)->required(),
+                    'record_id' => $schema->string()->description('The exact ID for a single delete only. Omit for bulk actions.'),
+                ],
+                function (Request $request) use ($actions): array {
+                    if ($this->draft !== null) {
+                        return ['prepared' => true];
+                    }
+
+                    $args = $request->validate([
+                        'resource' => 'required|string|max:150',
+                        'operation' => 'required|in:'.implode(',', ActionProposalStore::OPERATIONS),
+                        'record_id' => 'required_if:operation,delete|prohibited_unless:operation,delete|nullable|string|max:100',
+                    ]);
+
+                    $this->draft = $actions->prepare($args['resource'], $args['operation'], $args['record_id'] ?? null);
+
+                    return ['prepared' => true, 'records' => count($this->draft['records'])];
                 },
             ),
         ];

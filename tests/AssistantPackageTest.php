@@ -2,8 +2,10 @@
 
 namespace Alareqi\FilamentAiAssistant\Tests;
 
+use Alareqi\FilamentAiAssistant\ActionProposalStore;
 use Alareqi\FilamentAiAssistant\AssistantAgent;
 use Alareqi\FilamentAiAssistant\AssistantChat;
+use Alareqi\FilamentAiAssistant\AssistantSelectionAction;
 use Alareqi\FilamentAiAssistant\DraftStore;
 use Alareqi\FilamentAiAssistant\FilamentAiAssistantPlugin;
 use Alareqi\FilamentAiAssistant\FilamentAiAssistantServiceProvider;
@@ -11,6 +13,9 @@ use Alareqi\FilamentAiAssistant\ResourceRegistry;
 use BladeUI\Heroicons\BladeHeroiconsServiceProvider;
 use BladeUI\Icons\BladeIconsServiceProvider;
 use Filament\Actions\ActionsServiceProvider;
+use Filament\Actions\BulkAction;
+use Filament\Actions\DeleteAction;
+use Filament\Actions\DeleteBulkAction;
 use Filament\Facades\Filament;
 use Filament\FilamentServiceProvider;
 use Filament\Forms\Components\TextInput;
@@ -27,11 +32,13 @@ use Filament\Resources\Resource;
 use Filament\Schemas\Schema;
 use Filament\Schemas\SchemasServiceProvider;
 use Filament\Support\SupportServiceProvider;
+use Filament\Tables\Table;
 use Filament\Tables\TablesServiceProvider;
 use Filament\Widgets\WidgetsServiceProvider;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Auth\User;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema as StorageSchema;
@@ -100,6 +107,7 @@ final class AssistantPackageTest extends TestCase
             $table->string('code')->nullable();
             $table->json('translations')->nullable();
             $table->string('secret_code')->nullable();
+            $table->boolean('published')->default(false);
         });
 
         Gate::policy(Entry::class, EntryPolicy::class);
@@ -155,27 +163,24 @@ final class AssistantPackageTest extends TestCase
             ->plugin(FilamentAiAssistantPlugin::make()
                 ->authorizeUsing(fn (FixtureUser $user): bool => $user->allowed)
                 ->instructions(fn (): string => 'Help with customer support.'));
-        $prompts = [];
-        AssistantAgent::fake(function (AgentPrompt $prompt) use (&$prompts): string {
-            $prompts[] = $prompt->agent->instructions();
+        AssistantAgent::fake(['Ready.', 'Ready.', 'Ready.'])->preventStrayPrompts();
 
-            return 'Ready.';
-        })->preventStrayPrompts();
-
-        foreach ([$catalogPanel, $supportPanel, $defaultPanel] as $panel) {
+        foreach ([
+            [$catalogPanel, 'Help with the catalog.'],
+            [$supportPanel, 'Help with customer support.'],
+            [$defaultPanel, 'Use the shared instructions.'],
+        ] as [$panel, $instructions]) {
             Filament::setCurrentPanel($panel);
+            $question = 'What can you do on '.$panel->getId().'?';
 
             Livewire::test(AssistantChat::class)
-                ->set('message', 'What can you do?')
+                ->set('message', $question)
                 ->call('send')
                 ->assertHasNoErrors();
-        }
 
-        $this->assertSame([
-            'Help with the catalog.',
-            'Help with customer support.',
-            'Use the shared instructions.',
-        ], $prompts);
+            AssistantAgent::assertPrompted(fn (AgentPrompt $prompt): bool => $prompt->contains($question)
+                && $prompt->agent->instructions() === $instructions);
+        }
     }
 
     public function test_chat_prepares_a_draft_and_the_unmodified_native_page_validates_and_saves_it(): void
@@ -420,6 +425,138 @@ final class AssistantPackageTest extends TestCase
 
         return $parameters['assistantDraft'];
     }
+
+    public function test_assistant_bulk_actions_only_apply_to_the_explicit_selection_after_native_confirmation(): void
+    {
+        $one = Entry::query()->create(['name' => 'First item']);
+        $two = Entry::query()->create(['name' => 'Second item']);
+        $other = Entry::query()->create(['name' => 'Not selected']);
+
+        foreach (['publish' => true, 'unpublish' => false] as $operation => $published) {
+            Livewire::withQueryParams([])->test(ListEntries::class)
+                ->assertOk()
+                ->callTableBulkAction('sendSelectionToAssistant', [(string) $one->id, (string) $two->id])
+                ->assertDispatched('filament-ai-assistant-selection');
+
+            AssistantAgent::fake([
+                new ToolCall('prepare', 'prepare_action', ['resource' => 'entries', 'operation' => $operation]),
+                'Action proposed',
+            ])->preventStrayPrompts();
+
+            $proposal = Livewire::withQueryParams([])->test(AssistantChat::class)
+                ->set('message', 'Please '.$operation.' the selected entries')
+                ->call('send')
+                ->assertHasNoErrors()
+                ->assertSee('Review action')
+                ->assertSee('First item')
+                ->assertSee('Second item')
+                ->get('draft');
+
+            $this->assertSame([$one->id, $two->id], array_map('intval', array_column($proposal['records'], 'id')));
+            $this->assertSame(! $published, $one->fresh()->published);
+
+            $review = Livewire::withQueryParams(['assistantAction' => $proposal['id']])->test(ListEntries::class);
+            $this->assertSame($operation, $review->instance()->getMountedAction()?->getName());
+            $this->assertSame(! $published, $two->fresh()->published);
+            $review->call('callMountedAction')->assertOk();
+
+            $this->assertSame($published, $one->fresh()->published);
+            $this->assertSame($published, $two->fresh()->published);
+            $this->assertFalse($other->fresh()->published);
+            $this->assertFalse(app(ActionProposalStore::class)->isPending($proposal['id']));
+        }
+    }
+
+    public function test_assistant_single_delete_uses_the_existing_confirmation_and_does_not_run_on_open(): void
+    {
+        $entry = Entry::query()->create(['name' => 'Delete target']);
+        $other = Entry::query()->create(['name' => 'Other record']);
+        $proposal = app(ActionProposalStore::class)->prepare('entries', 'delete', (string) $entry->id);
+
+        Livewire::withQueryParams(['assistantAction' => $proposal['id']])
+            ->test(EditEntry::class, ['record' => $other->id])->assertForbidden();
+
+        $review = Livewire::withQueryParams(['assistantAction' => $proposal['id']])
+            ->test(EditEntry::class, ['record' => $entry->id]);
+
+        $this->assertModelExists($entry);
+        $this->assertSame('delete', $review->instance()->getMountedAction()?->getName());
+        $review->call('callMountedAction')->assertOk();
+        $this->assertModelMissing($entry);
+        $this->assertModelExists($other);
+    }
+
+    public function test_assistant_rejects_changed_records_and_tampered_bulk_selections(): void
+    {
+        $entry = Entry::query()->create(['name' => 'Selected']);
+        $other = Entry::query()->create(['name' => 'Other']);
+        Livewire::test(ListEntries::class)->callTableBulkAction('sendSelectionToAssistant', [(string) $entry->id]);
+        $proposal = app(ActionProposalStore::class)->prepare('entries', 'publish', null);
+
+        Livewire::withQueryParams(['assistantAction' => $proposal['id']])
+            ->test(ListEntries::class)->set('selectedTableRecords', [(string) $other->id])
+            ->call('callMountedAction')->assertStatus(409);
+        $this->assertFalse($other->fresh()->published);
+
+        $review = Livewire::withQueryParams(['assistantAction' => $proposal['id']])->test(ListEntries::class);
+        $entry->update(['name' => 'Changed']);
+        $review->call('callMountedAction')->assertStatus(409);
+        $this->assertFalse($entry->fresh()->published);
+    }
+
+    public function test_bulk_delete_is_off_until_the_panel_explicitly_enables_it(): void
+    {
+        $entry = Entry::query()->create(['name' => 'Selected']);
+        Livewire::test(ListEntries::class)->callTableBulkAction('sendSelectionToAssistant', [(string) $entry->id]);
+        $store = app(ActionProposalStore::class);
+
+        $this->assertNotContains('bulk_delete', $store->available(EntryResource::class));
+
+        FilamentAiAssistantPlugin::current()->actionsFor(EntryResource::class, ['bulk_delete']);
+        $proposal = $store->prepare('entries', 'bulk_delete', null);
+        $review = Livewire::withQueryParams(['assistantAction' => $proposal['id']])->test(ListEntries::class);
+
+        $this->assertModelExists($entry);
+        $review->call('callMountedAction')->assertOk();
+        $this->assertModelMissing($entry);
+    }
+
+    public function test_action_proposals_require_a_table_selection_and_are_bound_to_the_admin(): void
+    {
+        $entry = Entry::query()->create(['name' => 'Selected']);
+        $store = app(ActionProposalStore::class);
+        try {
+            $store->prepare('entries', 'publish', null);
+            $this->fail('A bulk proposal was prepared without a selection.');
+        } catch (ValidationException $exception) {
+            $this->assertStringContainsString('Select the rows', $exception->getMessage());
+        }
+        $proposal = $store->prepare('entries', 'delete', (string) $entry->id);
+
+        $this->actingAs(FixtureUser::query()->create(['allowed' => true]));
+        Livewire::withQueryParams(['assistantAction' => $proposal['id']])
+            ->test(EditEntry::class, ['record' => $entry->id])->assertForbidden();
+        $this->assertModelExists($entry);
+    }
+
+    public function test_confirmation_rechecks_record_permissions_and_an_expired_proposal_cannot_run(): void
+    {
+        $entry = Entry::query()->create(['name' => 'Selected']);
+        $store = app(ActionProposalStore::class);
+        $proposal = $store->prepare('entries', 'delete', (string) $entry->id);
+        $review = Livewire::withQueryParams(['assistantAction' => $proposal['id']])
+            ->test(EditEntry::class, ['record' => $entry->id]);
+
+        config(['assistant-test.delete_denied' => $entry->id]);
+        $review->call('callMountedAction')->assertForbidden();
+        $this->assertModelExists($entry);
+
+        config(['assistant-test.delete_denied' => null]);
+        $this->travel(31)->minutes();
+        Livewire::withQueryParams(['assistantAction' => $proposal['id']])
+            ->test(EditEntry::class, ['record' => $entry->id])->assertStatus(410);
+        $this->assertModelExists($entry);
+    }
 }
 
 final class FixturePanelProvider extends PanelProvider
@@ -429,7 +566,9 @@ final class FixturePanelProvider extends PanelProvider
         return $panel->id('package-test')
             ->path('package-test')
             ->resources([EntryResource::class, ReadOnlyEntryResource::class])
-            ->plugin(FilamentAiAssistantPlugin::make()->authorizeUsing(fn (FixtureUser $user): bool => (bool) $user->allowed));
+            ->plugin(FilamentAiAssistantPlugin::make()
+                ->actionsFor(EntryResource::class, ['publish', 'unpublish', 'delete'])
+                ->authorizeUsing(fn (FixtureUser $user): bool => (bool) $user->allowed));
     }
 }
 
@@ -448,7 +587,7 @@ final class Entry extends Model
 
     protected $guarded = [];
 
-    protected $casts = ['translations' => 'array'];
+    protected $casts = ['translations' => 'array', 'published' => 'boolean'];
 }
 
 final class EntryPolicy
@@ -472,11 +611,39 @@ final class EntryPolicy
     {
         return (bool) $user->allowed;
     }
+
+    public function delete(FixtureUser $user, Entry $entry): bool
+    {
+        return $user->allowed && config('assistant-test.delete_denied') !== $entry->id;
+    }
+
+    public function deleteAny(FixtureUser $user): bool
+    {
+        return (bool) $user->allowed;
+    }
 }
 
 final class EntryResource extends Resource
 {
     protected static ?string $model = Entry::class;
+
+    protected static ?string $recordTitleAttribute = 'name';
+
+    public static function table(Table $table): Table
+    {
+        $publishActions = collect(['publish' => true, 'unpublish' => false])
+            ->map(fn (bool $published, string $name): BulkAction => BulkAction::make($name)
+                ->requiresConfirmation()
+                ->authorizeIndividualRecords('update')
+                ->action(fn (Collection $records) => $records->each->update(['published' => $published])))
+            ->values()->all();
+
+        return $table->toolbarActions([
+            ...$publishActions,
+            AssistantSelectionAction::make(),
+            DeleteBulkAction::make()->authorizeIndividualRecords('delete'),
+        ]);
+    }
 
     public static function form(Schema $schema): Schema
     {
@@ -518,4 +685,9 @@ final class CreateEntry extends CreateRecord
 final class EditEntry extends EditRecord
 {
     protected static string $resource = EntryResource::class;
+
+    protected function getHeaderActions(): array
+    {
+        return [DeleteAction::make()];
+    }
 }

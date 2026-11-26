@@ -24,6 +24,7 @@
     }"
     x-on:keydown.escape.stop="if (open) closeChat()"
     x-on:filament-ai-assistant-response.window="$nextTick(() => scrollToLatest())"
+    x-on:filament-ai-assistant-selection.window="showChat(); $wire.refreshSelection()"
 >
     <section
         id="fia-chat-{{ $this->getId() }}"
@@ -63,6 +64,17 @@
                 </button>
             </div>
         </header>
+
+        @if ($selection)
+            <div class="fia-selection">
+                <x-filament::icon icon="heroicon-o-check-circle" class="fia-icon" aria-hidden="true" />
+                <span>{{ __('filament-ai-assistant::assistant.actions.selection', ['count' => count($selection['records']), 'resource' => $selection['label']]) }}</span>
+                <button type="button" class="fia-tool" wire:click="clearSelection" wire:loading.attr="disabled"
+                    title="{{ __('filament-ai-assistant::assistant.actions.clear_selection') }}" aria-label="{{ __('filament-ai-assistant::assistant.actions.clear_selection') }}">
+                    <x-filament::icon icon="heroicon-m-x-mark" class="fia-icon" aria-hidden="true" />
+                </button>
+            </div>
+        @endif
 
         <div class="fia-thread" x-ref="thread">
             @if (count($history))
@@ -105,6 +117,7 @@
             @endif
 
             @if ($draft)
+                @php($isAction = ($draft['kind'] ?? null) === 'action')
                 <div class="fia-draft">
                     <div class="fia-draft-heading">
                         <span class="fia-draft-mark" aria-hidden="true">
@@ -112,20 +125,38 @@
                         </span>
                         <div>
                             <p>{{ __('filament-ai-assistant::assistant.draft_status') }}</p>
-                            <h3>{{ __('filament-ai-assistant::assistant.draft_for', ['resource' => $draft['label']]) }}</h3>
+                            <h3>
+                                @if ($isAction)
+                                    {{ __('filament-ai-assistant::assistant.actions.'.$draft['operation']) }}
+                                    · {{ __('filament-ai-assistant::assistant.actions.selection', ['count' => count($draft['records']), 'resource' => $draft['label']]) }}
+                                @else
+                                    {{ __('filament-ai-assistant::assistant.draft_for', ['resource' => $draft['label']]) }}
+                                @endif
+                            </h3>
                         </div>
                     </div>
-                    <dl class="fia-changes">
-                        @foreach ($draft['fields'] as $field)
-                            <div class="fia-change">
-                                <dt>{{ $field['label'] }}</dt>
-                                <dd><small>{{ __('filament-ai-assistant::assistant.before') }}</small><span dir="auto">{{ $field['current'] }}</span></dd>
-                                <dd class="fia-change-proposed"><small>{{ __('filament-ai-assistant::assistant.after') }}</small><span dir="auto">{{ $field['proposed'] }}</span></dd>
-                            </div>
-                        @endforeach
-                    </dl>
+                    @if ($isAction)
+                        <ul class="fia-action-records">
+                            @foreach ($draft['records'] as $record)
+                                <li><span dir="auto">{{ $record['label'] }}</span><small dir="ltr">#{{ $record['id'] }}</small></li>
+                            @endforeach
+                        </ul>
+                        @if ($draft['warning'])
+                            <p class="fia-action-warning">{{ $draft['warning'] }}</p>
+                        @endif
+                    @else
+                        <dl class="fia-changes">
+                            @foreach ($draft['fields'] as $field)
+                                <div class="fia-change">
+                                    <dt>{{ $field['label'] }}</dt>
+                                    <dd><small>{{ __('filament-ai-assistant::assistant.before') }}</small><span dir="auto">{{ $field['current'] }}</span></dd>
+                                    <dd class="fia-change-proposed"><small>{{ __('filament-ai-assistant::assistant.after') }}</small><span dir="auto">{{ $field['proposed'] }}</span></dd>
+                                </div>
+                            @endforeach
+                        </dl>
+                    @endif
                     <a class="fia-review" href="{{ $draft['url'] }}">
-                        {{ __('filament-ai-assistant::assistant.review') }}
+                        {{ __('filament-ai-assistant::assistant.'.($isAction ? 'actions.review' : 'review')) }}
                         <x-filament::icon icon="heroicon-o-arrow-up-right" class="fia-icon fia-directional" aria-hidden="true" />
                     </a>
                 </div>

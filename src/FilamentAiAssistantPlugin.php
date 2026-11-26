@@ -23,6 +23,12 @@ final class FilamentAiAssistantPlugin implements Plugin
 
     private ?Closure $fieldFilter = null;
 
+    /** @var array<class-string<resource>, list<string>> */
+    private array $resourceActions = [];
+
+    /** @var array<class-string<resource>, Closure(): string> */
+    private array $deleteWarnings = [];
+
     public static function make(): self
     {
         return new self;
@@ -69,6 +75,33 @@ final class FilamentAiAssistantPlugin implements Plugin
     public function getInstructions(): ?string
     {
         return $this->instructions instanceof Closure ? ($this->instructions)() : $this->instructions;
+    }
+
+    /**
+     * @param  class-string<resource>  $resource
+     * @param  list<'publish'|'unpublish'|'delete'|'bulk_delete'>  $actions
+     * @param  (Closure(): string)|null  $deleteWarning
+     */
+    public function actionsFor(string $resource, array $actions, ?Closure $deleteWarning = null): self
+    {
+        $this->resourceActions[$resource] = $actions;
+
+        if ($deleteWarning !== null) {
+            $this->deleteWarnings[$resource] = $deleteWarning;
+        }
+
+        return $this;
+    }
+
+    /** @return list<string> */
+    public function getResourceActions(string $resource): array
+    {
+        return array_values(array_intersect(ActionProposalStore::OPERATIONS, $this->resourceActions[$resource] ?? []));
+    }
+
+    public function getDeleteWarning(string $resource): ?string
+    {
+        return isset($this->deleteWarnings[$resource]) ? ($this->deleteWarnings[$resource])() : null;
     }
 
     /** @param Closure(Authenticatable, Panel): bool $callback */
