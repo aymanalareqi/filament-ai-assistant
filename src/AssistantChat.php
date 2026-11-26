@@ -54,7 +54,11 @@ final class AssistantChat extends Component
     {
         $this->authorizeConversation();
         $this->message = trim($this->message);
-        $this->validate(['message' => 'required|string|max:2000']);
+        $this->validate(['message' => 'required|string|max:2000'], [
+            'message.required' => __('filament-ai-assistant::assistant.errors.message_required'),
+            'message.string' => __('filament-ai-assistant::assistant.errors.message_invalid'),
+            'message.max' => __('filament-ai-assistant::assistant.errors.message_too_long'),
+        ]);
 
         $key = 'filament-ai-assistant:'.Filament::getCurrentPanel()->getId().':'.Filament::auth()->id();
 

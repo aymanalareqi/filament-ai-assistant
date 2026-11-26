@@ -27,6 +27,9 @@ return [
     'yes' => 'نعم',
     'no' => 'لا',
     'errors' => [
+        'message_required' => 'اكتب رسالة قبل الإرسال.',
+        'message_invalid' => 'يجب أن تكون الرسالة نصًا.',
+        'message_too_long' => 'يجب ألا تتجاوز الرسالة :max حرف.',
         'resource_unavailable' => 'هذا المورد غير متاح لك.',
         'record_missing' => 'لم يُعثر على السجل.',
         'search_term' => 'أدخل اسمًا أو رمزًا أو معرّف سجل للبحث.',

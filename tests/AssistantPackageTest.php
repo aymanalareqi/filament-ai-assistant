@@ -33,6 +33,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Auth\User;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema as StorageSchema;
 use Illuminate\Validation\ValidationException;
 use Laravel\Ai\AiServiceProvider;
@@ -95,6 +96,8 @@ final class AssistantPackageTest extends TestCase
         StorageSchema::create('entries', function (Blueprint $table): void {
             $table->id();
             $table->string('name');
+            $table->string('code')->nullable();
+            $table->json('translations')->nullable();
             $table->string('secret_code')->nullable();
         });
 
@@ -161,6 +164,34 @@ final class AssistantPackageTest extends TestCase
             ->assertDontSee('Open review form');
     }
 
+    public function test_numeric_search_finds_exact_codes_and_database_ids(): void
+    {
+        $idMatch = Entry::query()->create(['id' => 123, 'name' => 'ID match']);
+        $codeMatch = Entry::query()->create(['name' => 'Code match', 'code' => '123']);
+        $leadingZeros = Entry::query()->create(['name' => 'Padded code', 'code' => '00123']);
+        $longCode = Entry::query()->create(['name' => 'Long code', 'code' => '123456789012345678901']);
+        $registry = app(ResourceRegistry::class);
+
+        $this->assertEqualsCanonicalizing(['123', (string) $codeMatch->id], array_column($registry->search('entries', '123'), 'id'));
+        $this->assertEqualsCanonicalizing([(string) $idMatch->id, (string) $leadingZeros->id], array_column($registry->search('entries', '00123'), 'id'));
+        $this->assertSame([(string) $longCode->id], array_column($registry->search('entries', '123456789012345678901'), 'id'));
+    }
+
+    public function test_chat_validation_messages_are_localized_in_arabic(): void
+    {
+        app()->setLocale('ar');
+
+        Livewire::test(AssistantChat::class)
+            ->set('message', '   ')
+            ->call('send')
+            ->assertHasErrors(['message' => 'required'])
+            ->assertSee('اكتب رسالة قبل الإرسال.')
+            ->set('message', str_repeat('س', 2001))
+            ->call('send')
+            ->assertHasErrors(['message' => 'max'])
+            ->assertSee('يجب ألا تتجاوز الرسالة 2000 حرف.');
+    }
+
     public function test_chat_restores_messages_on_a_new_component_until_cleared(): void
     {
         AssistantAgent::fake(['The catalog is ready.'])->preventStrayPrompts();
@@ -206,6 +237,43 @@ final class AssistantPackageTest extends TestCase
         $this->assertDatabaseHas('entries', ['name' => 'News']);
     }
 
+    public function test_a_create_draft_audits_the_saved_translated_field(): void
+    {
+        Log::spy();
+        $draft = app(DraftStore::class)->prepare('entries', 'create', null, [
+            ['field' => 'name', 'value' => 'News'],
+            ['field' => 'translations.ar', 'value' => 'أخبار'],
+        ]);
+
+        Livewire::withQueryParams(['assistantDraft' => $this->draftId($draft)])
+            ->test(CreateEntry::class)
+            ->call('create')->assertHasNoFormErrors();
+
+        $this->assertSame('أخبار', Entry::sole()->translations['ar']);
+        Log::shouldHaveReceived('info')->once()->withArgs(fn (string $message, array $context): bool => $message === 'Filament AI assistant draft reviewed and saved.'
+            && $context['operation'] === 'create' && $context['saved_fields'] === ['name', 'translations.ar']);
+    }
+
+    public function test_an_edit_draft_only_audits_the_saved_translations_that_actually_changed(): void
+    {
+        $entry = Entry::query()->create(['name' => 'Before', 'translations' => ['ar' => 'قبل', 'en' => 'Before']]);
+        Log::spy();
+        $draft = app(DraftStore::class)->prepare('entries', 'edit', (string) $entry->id, [
+            ['field' => 'translations.ar', 'value' => 'بعد'],
+            ['field' => 'translations.en', 'value' => 'After'],
+            ['field' => 'name', 'value' => 'Renamed'],
+        ]);
+
+        Livewire::withQueryParams(['assistantDraft' => $this->draftId($draft)])
+            ->test(EditEntry::class, ['record' => $entry->id])
+            ->set('data.translations.en', 'Before')
+            ->call('save')->assertHasNoFormErrors();
+
+        $this->assertSame(['ar' => 'بعد', 'en' => 'Before'], $entry->fresh()->translations);
+        Log::shouldHaveReceived('info')->once()->withArgs(fn (string $message, array $context): bool => $message === 'Filament AI assistant draft reviewed and saved.'
+            && $context['operation'] === 'edit' && $context['saved_fields'] === ['translations.ar', 'name']);
+    }
+
     public function test_it_rejects_a_draft_if_the_record_changed_after_it_was_opened(): void
     {
         $entry = Entry::query()->create(['name' => 'Before']);
@@ -247,7 +315,7 @@ final class AssistantPackageTest extends TestCase
         $entry = Entry::query()->create(['name' => 'Safe', 'secret_code' => 'do-not-expose']);
         $registry = app(ResourceRegistry::class);
         $form = $registry->form(EntryResource::class, 'edit', (string) $entry->id)['form'];
-        $this->assertSame(['name'], array_column($registry->describe($form), 'key'));
+        $this->assertSame(['name', 'translations.ar', 'translations.en'], array_column($registry->describe($form), 'key'));
 
         $this->expectException(ValidationException::class);
         app(DraftStore::class)->prepare('entries', 'edit', (string) $entry->id, [['field' => 'secret_code', 'value' => 'Replaced']]);
@@ -286,6 +354,8 @@ final class Entry extends Model
     public $timestamps = false;
 
     protected $guarded = [];
+
+    protected $casts = ['translations' => 'array'];
 }
 
 final class EntryPolicy
@@ -319,6 +389,8 @@ final class EntryResource extends Resource
     {
         return $schema->components([
             TextInput::make('name')->required()->maxLength(60),
+            TextInput::make('translations.ar'),
+            TextInput::make('translations.en'),
             TextInput::make('secret_code')->password(),
         ]);
     }

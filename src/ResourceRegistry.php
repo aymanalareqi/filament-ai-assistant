@@ -95,22 +95,36 @@ final class ResourceRegistry
             $this->invalid(__('filament-ai-assistant::assistant.errors.search_term'));
         }
 
-        if (ctype_digit($term)) {
-            $query->whereKey($term);
-        } elseif (! $columns) {
+        $numeric = ctype_digit($term);
+        $key = match (true) {
+            ! $numeric => null,
+            in_array($model->getKeyType(), ['int', 'integer'], true) => filter_var(ltrim($term, '0') ?: '0', FILTER_VALIDATE_INT, FILTER_NULL_ON_FAILURE),
+            default => $term,
+        };
+
+        if ($key === null && $columns === []) {
             $this->invalid(__('filament-ai-assistant::assistant.errors.search_id'));
-        } else {
-            $query->where(function (Builder $matches) use ($columns, $model, $term, $locale, $fallback): void {
-                foreach ($columns as $column) {
-                    if (method_exists($model, 'isTranslatableAttribute') && $model->isTranslatableAttribute($column)) {
-                        $matches->orWhere($column.'->'.$locale, 'like', '%'.$term.'%')
-                            ->orWhere($column.'->'.$fallback, 'like', '%'.$term.'%');
-                    } else {
-                        $matches->orWhere($column, 'like', '%'.$term.'%');
-                    }
-                }
-            });
         }
+
+        $operator = $numeric ? '=' : 'like';
+        $value = $numeric ? $term : '%'.$term.'%';
+
+        $query->where(function (Builder $matches) use ($key, $columns, $model, $operator, $value, $locale, $fallback): void {
+            if ($key !== null) {
+                $matches->whereKey($key);
+            }
+
+            foreach ($columns as $column) {
+                $qualifiedColumn = $model->qualifyColumn($column);
+
+                if (method_exists($model, 'isTranslatableAttribute') && $model->isTranslatableAttribute($column)) {
+                    $matches->orWhere($qualifiedColumn.'->'.$locale, $operator, $value)
+                        ->orWhere($qualifiedColumn.'->'.$fallback, $operator, $value);
+                } else {
+                    $matches->orWhere($qualifiedColumn, $operator, $value);
+                }
+            }
+        });
 
         return $query->limit(12)->get()
             ->filter(fn (Model $record): bool => $resource::canView($record) || $resource::canEdit($record))

@@ -6,6 +6,7 @@ use Filament\Facades\Filament;
 use Filament\Resources\Pages\CreateRecord;
 use Filament\Resources\Pages\EditRecord;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -114,7 +115,7 @@ final class DraftStore
         if ($review !== null) {
             $this->authorize($page, $review);
             abort_unless($review['expires'] > now()->timestamp && session()->has('filament-ai-assistant.drafts.'.$review['id']), 410, __('filament-ai-assistant::assistant.errors.expired'));
-            $this->verifyVersion($page, $review);
+            $review['before'] = $this->draftFieldValues($this->verifyVersion($page, $review), $review['patch']);
         }
 
         return $review;
@@ -124,19 +125,20 @@ final class DraftStore
     public function afterSave(CreateRecord|EditRecord $page, array $review): void
     {
         $record = $page->getRecord();
-        if ($record === null || ! $record->exists) {
+        $savedRecord = $record?->exists ? $record->fresh() : null;
+        if ($savedRecord === null || ($review['operation'] === 'edit' && $this->fingerprint($savedRecord) === $review['version'])) {
             return;
         }
 
-        $savedFields = array_values(array_intersect($review['patch'], $this->changedFields($record, $review['operation'])));
-        if ($review['operation'] === 'edit' && $this->fingerprint($record->fresh()) === $review['version']) {
-            return;
-        }
+        $before = $review['before'];
+        $after = $this->draftFieldValues($savedRecord, $review['patch']);
+        $savedFields = array_values(array_filter($review['patch'], fn (string $path): bool => ($before[$path] ?? null) !== ($after[$path] ?? null)
+            || array_key_exists($path, $before) !== array_key_exists($path, $after)));
 
         Log::info('Filament AI assistant draft reviewed and saved.', [
             'actor_id' => $review['actor'],
             'resource' => $review['resource'],
-            'record_id' => $record->getKey(),
+            'record_id' => $savedRecord->getKey(),
             'operation' => $review['operation'],
             'proposed_fields' => $review['patch'],
             'saved_fields' => $savedFields,
@@ -146,10 +148,36 @@ final class DraftStore
         session()->forget('filament-ai-assistant.reviews.'.$page->getId());
     }
 
-    /** @return list<string> */
-    private function changedFields(Model $record, string $operation): array
+    /**
+     * @param  list<string>  $paths
+     * @return array<string, mixed>
+     */
+    private function draftFieldValues(?Model $record, array $paths): array
     {
-        return array_keys($operation === 'create' ? $record->getAttributes() : $record->getChanges());
+        $attributes = $record?->getRawOriginal() ?? [];
+        $values = [];
+
+        foreach ($paths as $path) {
+            [$attribute, $child] = array_pad(explode('.', $path, 2), 2, null);
+
+            if (! array_key_exists($attribute, $attributes)) {
+                continue;
+            }
+
+            $value = $attributes[$attribute];
+            if ($child === null) {
+                $values[$path] = $value;
+
+                continue;
+            }
+
+            $nested = is_string($value) ? json_decode($value, true) : $value;
+            if (is_array($nested) && Arr::has($nested, $child)) {
+                $values[$path] = Arr::get($nested, $child);
+            }
+        }
+
+        return $values;
     }
 
     /** @param array<string, mixed>|null $draft */
@@ -172,16 +200,19 @@ final class DraftStore
     }
 
     /** @param array<string, mixed> $draft */
-    private function verifyVersion(CreateRecord|EditRecord $page, array $draft): void
+    private function verifyVersion(CreateRecord|EditRecord $page, array $draft): ?Model
     {
-        if ($page instanceof EditRecord) {
-            $resource = $page::getResource();
-            $current = $this->resources->record($resource, (string) $page->getRecord()->getKey());
-
-            abort_unless($resource::canEdit($current), 403);
-
-            abort_unless($this->fingerprint($current) === $draft['version'], 409, __('filament-ai-assistant::assistant.errors.changed'));
+        if (! $page instanceof EditRecord) {
+            return null;
         }
+
+        $resource = $page::getResource();
+        $current = $this->resources->record($resource, (string) $page->getRecord()->getKey());
+
+        abort_unless($resource::canEdit($current), 403);
+        abort_unless($this->fingerprint($current) === $draft['version'], 409, __('filament-ai-assistant::assistant.errors.changed'));
+
+        return $current;
     }
 
     private function fingerprint(?Model $record): ?string

@@ -27,6 +27,9 @@ return [
     'yes' => 'Yes',
     'no' => 'No',
     'errors' => [
+        'message_required' => 'Write a message before sending.',
+        'message_invalid' => 'Your message must be text.',
+        'message_too_long' => 'Your message can be up to :max characters.',
         'resource_unavailable' => 'This resource is not available to you.',
         'record_missing' => 'The record could not be found.',
         'search_term' => 'Provide a name, code, or record ID to search.',
