@@ -19,7 +19,7 @@ final class AssistantAgent implements Agent, Conversational, HasTools
 {
     use Promptable;
 
-    /** @var array{url: string, label: string, fields: array}|null */
+    /** @var array{id: string, url: string, label: string, fields: array}|null */
     private ?array $draft = null;
 
     /** @param list<array{role: string, text: string}> $history */
@@ -48,7 +48,7 @@ TEXT;
         }
     }
 
-    /** @return array{url: string, label: string, fields: array}|null */
+    /** @return array{id: string, url: string, label: string, fields: array}|null */
     public function draft(): ?array
     {
         return $this->draft;

@@ -6,8 +6,8 @@ use Closure;
 use Filament\Contracts\Plugin;
 use Filament\Facades\Filament;
 use Filament\Panel;
-use Filament\View\PanelsRenderHook;
 use Filament\Resources\Resource;
+use Filament\View\PanelsRenderHook;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Contracts\View\View;
 use Illuminate\Support\Facades\Gate;
@@ -47,7 +47,9 @@ final class FilamentAiAssistantPlugin implements Plugin
     {
         $panel->renderHook(
             PanelsRenderHook::BODY_END,
-            fn (): View|string => $this->canUse() ? view('filament-ai-assistant::launcher') : '',
+            fn (): View|string => $this->canUse()
+                ? view('filament-ai-assistant::launcher', ['chatScope' => $this->chatScope()])
+                : '',
         );
     }
 
@@ -97,5 +99,18 @@ final class FilamentAiAssistantPlugin implements Plugin
         return $user !== null && ($this->authorizer !== null
             ? ($this->authorizer)($user, $panel)
             : Gate::forUser($user)->allows('use-filament-ai-assistant'));
+    }
+
+    public function chatScope(): string
+    {
+        $panel = Filament::getCurrentPanel();
+        $tenant = Filament::getTenant();
+
+        return hash('sha256', serialize([
+            $panel->getId(),
+            $panel->getAuthGuard(),
+            (string) $panel->auth()->id(),
+            $tenant === null ? null : [$tenant::class, (string) $tenant->getKey()],
+        ]));
     }
 }

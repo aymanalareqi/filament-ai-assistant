@@ -15,11 +15,14 @@ final class AssistantChat extends Component
 {
     public string $message = '';
 
+    #[Locked]
+    public string $scope;
+
     /** @var list<array{role: string, text: string}> */
     #[Locked]
     public array $history = [];
 
-    /** @var array{url: string, label: string, fields: array}|null */
+    /** @var array{id: string, url: string, label: string, fields: array}|null */
     #[Locked]
     public ?array $draft = null;
 
@@ -33,19 +36,23 @@ final class AssistantChat extends Component
         return view('filament-ai-assistant::assistant');
     }
 
-    public function mount(): void
+    public function mount(DraftStore $drafts): void
     {
         abort_unless(self::canAccess(), 403);
+
+        $this->scope = FilamentAiAssistantPlugin::current()->chatScope();
+        $this->restoreConversation($drafts);
     }
 
-    public function hydrate(): void
+    public function hydrate(DraftStore $drafts): void
     {
-        abort_unless(self::canAccess(), 403);
+        $this->authorizeConversation();
+        $this->restoreConversation($drafts);
     }
 
     public function send(ResourceRegistry $resources, DraftStore $drafts): void
     {
-        abort_unless(self::canAccess(), 403);
+        $this->authorizeConversation();
         $this->message = trim($this->message);
         $this->validate(['message' => 'required|string|max:2000']);
 
@@ -58,7 +65,6 @@ final class AssistantChat extends Component
         }
 
         RateLimiter::hit($key);
-        $this->draft = null;
         $agent = new AssistantAgent($resources, $drafts, array_slice($this->history, -10));
 
         try {
@@ -84,14 +90,36 @@ final class AssistantChat extends Component
             ['role' => 'user', 'text' => $this->message],
             ['role' => 'assistant', 'text' => $text],
         ], -20);
+        session()->put($this->conversationKey(), ['history' => $this->history, 'draft' => $this->draft]);
+
         $this->reset('message');
+        $this->dispatch('filament-ai-assistant-response');
     }
 
     public function clearChat(): void
     {
-        abort_unless(self::canAccess(), 403);
+        $this->authorizeConversation();
 
+        session()->forget($this->conversationKey());
         $this->reset('message', 'history', 'draft');
         $this->resetErrorBag();
+    }
+
+    private function authorizeConversation(): void
+    {
+        abort_unless(self::canAccess() && $this->scope === FilamentAiAssistantPlugin::current()->chatScope(), 403);
+    }
+
+    private function restoreConversation(DraftStore $drafts): void
+    {
+        $conversation = session()->get($this->conversationKey(), []);
+        $this->history = $conversation['history'] ?? [];
+        $draft = $conversation['draft'] ?? null;
+        $this->draft = $draft !== null && $drafts->isPending($draft['id']) ? $draft : null;
+    }
+
+    private function conversationKey(): string
+    {
+        return 'filament-ai-assistant.conversations.'.$this->scope;
     }
 }

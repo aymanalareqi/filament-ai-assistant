@@ -16,7 +16,7 @@ final class DraftStore
 
     /**
      * @param  list<array{field: string, value: mixed}>  $changes
-     * @return array{url: string, label: string, fields: array}
+     * @return array{id: string, url: string, label: string, fields: array}
      */
     public function prepare(string $slug, string $operation, ?string $key, array $changes): array
     {
@@ -69,6 +69,7 @@ final class DraftStore
         session()->put('filament-ai-assistant.drafts', array_slice($drafts, -8, preserve_keys: true));
 
         return [
+            'id' => $id,
             'url' => $resource::getUrl($operation, [
                 ...($record === null ? [] : ['record' => $record]),
                 'assistantDraft' => $id,
@@ -76,6 +77,11 @@ final class DraftStore
             'label' => $resource::getModelLabel(),
             'fields' => $preview,
         ];
+    }
+
+    public function isPending(string $id): bool
+    {
+        return session()->get('filament-ai-assistant.drafts.'.$id.'.expires', 0) > now()->timestamp;
     }
 
     public function load(CreateRecord|EditRecord $page, string $id): void

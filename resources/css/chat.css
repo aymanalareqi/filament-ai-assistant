@@ -1,16 +1,69 @@
-.fia-chat { max-inline-size: 54rem; margin-inline: auto; }
-.fia-messages { display: grid; gap: .75rem; margin-block-end: 1rem; max-block-size: 34rem; overflow: auto; }
-.fia-message, .fia-draft { background: color-mix(in srgb, currentColor 5%, transparent); border-radius: .75rem; padding: .875rem 1rem; }
-.fia-message { inline-size: fit-content; max-inline-size: 88%; overflow-wrap: anywhere; }
-.fia-message-user { justify-self: end; }
+.fia-widget {
+    --fia-edge: 1rem;
+    --fia-launcher-size: 3.25rem;
+    --fia-popup-gap: .75rem;
+    --fia-bottom: max(var(--fia-edge), env(safe-area-inset-bottom));
+
+    position: fixed;
+    inset-inline-end: var(--fia-edge);
+    inset-block-end: var(--fia-bottom);
+    z-index: 35;
+}
+
+.fia-widget [x-cloak] { display: none !important; }
+.fia-widget .fia-icon { inline-size: 1.25rem; block-size: 1.25rem; }
+
+.fia-launcher, .fia-close { display: grid; place-items: center; cursor: pointer; }
+.fia-launcher {
+    inline-size: var(--fia-launcher-size);
+    block-size: var(--fia-launcher-size);
+    border-radius: 50%;
+    background: var(--primary-700, #806738);
+    color: white;
+    box-shadow: 0 .375rem 1.125rem #0003;
+}
+.fia-launcher:hover { background: var(--primary-800, #6a532b); }
+.fia-close { inline-size: 2rem; block-size: 2rem; border-radius: .5rem; }
+.fia-close:hover { background: color-mix(in srgb, currentColor 8%, transparent); }
+.fia-widget button:focus-visible, .fia-compose textarea:focus-visible {
+    outline: 2px solid var(--primary-500, #a58c55);
+    outline-offset: 2px;
+}
+
+.fia-popover {
+    position: absolute;
+    inset-inline-end: 0;
+    inset-block-end: calc(100% + var(--fia-popup-gap));
+    inline-size: min(25rem, calc(100vw - 2 * var(--fia-edge)));
+    max-block-size: calc(100vh - var(--fia-bottom) - var(--fia-launcher-size) - var(--fia-popup-gap) - var(--fia-edge));
+    max-block-size: calc(100dvh - var(--fia-bottom) - var(--fia-launcher-size) - var(--fia-popup-gap) - var(--fia-edge));
+    display: flex;
+    flex-direction: column;
+    overflow: auto;
+    border: 1px solid #0002;
+    border-radius: 1rem;
+    background: white;
+    color: #18181b;
+    box-shadow: 0 1rem 2.5rem #0002;
+}
+.dark .fia-popover { background: #18181b; color: #f4f4f5; border-color: #fff3; box-shadow: 0 1rem 2.5rem #0006; }
+
+.fia-header { display: flex; align-items: center; justify-content: space-between; gap: .75rem; padding: .625rem .875rem; font-weight: 650; border-block-end: 1px solid color-mix(in srgb, currentColor 12%, transparent); }
+.fia-thread { flex: 1 1 auto; min-block-size: 4rem; overflow: auto; overscroll-behavior: contain; padding: .875rem; }
+.fia-intro { font-size: .9rem; line-height: 1.5; opacity: .8; }
+.fia-messages, .fia-draft, .fia-compose, .fia-draft dl { display: grid; gap: .65rem; }
+.fia-message, .fia-draft { background: color-mix(in srgb, currentColor 6%, transparent); border-radius: .75rem; padding: .625rem .75rem; }
+.fia-message { inline-size: fit-content; max-inline-size: 90%; overflow-wrap: anywhere; }
+.fia-message-user { justify-self: end; background: color-mix(in srgb, var(--primary-500, #a58c55) 17%, transparent); }
 .fia-message > div { white-space: pre-wrap; }
 .fia-message > strong, .fia-change small { display: block; font-size: .8em; opacity: .75; }
-.fia-draft, .fia-compose, .fia-draft dl { display: grid; gap: .75rem; }
-.fia-draft { margin-block-end: 1rem; }
+.fia-draft { margin-block-start: .75rem; }
 .fia-draft > .fi-btn { justify-self: start; }
 .fia-change { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: .25rem .75rem; overflow-wrap: anywhere; }
 .fia-change dt { grid-column: 1 / -1; font-weight: 600; }
-.fia-compose textarea { inline-size: 100%; resize: vertical; padding: .75rem; border: 1px solid color-mix(in srgb, currentColor 28%, transparent); border-radius: .5rem; background: transparent; }
-.fia-actions { display: flex; flex-wrap: wrap; gap: .65rem; align-items: center; }
-.fia-error { color: var(--danger-600, #b42318); }
-.dark .fia-error { color: var(--danger-400, #fda29b); }
+.fia-compose { flex: 0 0 auto; padding: .75rem .875rem; border-block-start: 1px solid color-mix(in srgb, currentColor 12%, transparent); }
+.fia-compose label { font-size: .875rem; font-weight: 600; }
+.fia-compose textarea { inline-size: 100%; max-block-size: 8rem; resize: vertical; padding: .625rem; border: 1px solid color-mix(in srgb, currentColor 24%, transparent); border-radius: .5rem; background: transparent; }
+.fia-actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; font-size: .875rem; }
+.fia-error { color: #b42318; }
+.dark .fia-error { color: #fda29b; }

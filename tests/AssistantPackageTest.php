@@ -142,6 +142,11 @@ final class AssistantPackageTest extends TestCase
         $this->assertSame('Before', $entry->fresh()->name);
         $this->assertStringNotContainsString('do-not-expose', json_encode($draft));
 
+        Livewire::test(AssistantChat::class)
+            ->assertSee('Rename Before to After')
+            ->assertSee('Open review form')
+            ->assertSetStrict('draft', $draft);
+
         Livewire::withQueryParams(['assistantDraft' => $this->draftId($draft)])
             ->test(EditEntry::class, ['record' => $entry->id])
             ->assertFormSet(['name' => 'After'])
@@ -150,6 +155,40 @@ final class AssistantPackageTest extends TestCase
 
         $this->assertSame('After', $entry->fresh()->name);
         $this->assertSame('do-not-expose', $entry->fresh()->secret_code);
+
+        Livewire::test(AssistantChat::class)
+            ->assertSee('Rename Before to After')
+            ->assertDontSee('Open review form');
+    }
+
+    public function test_chat_restores_messages_on_a_new_component_until_cleared(): void
+    {
+        AssistantAgent::fake(['The catalog is ready.'])->preventStrayPrompts();
+
+        Livewire::test(AssistantChat::class)
+            ->set('message', 'Check the catalog')
+            ->call('send');
+
+        Livewire::test(AssistantChat::class)
+            ->assertSee('Check the catalog')
+            ->assertSee('The catalog is ready.')
+            ->call('clearChat');
+
+        Livewire::test(AssistantChat::class)->assertSetStrict('history', []);
+    }
+
+    public function test_a_different_authorized_account_cannot_restore_or_update_the_chat(): void
+    {
+        AssistantAgent::fake(['This is only for the first account.'])->preventStrayPrompts();
+
+        $chat = Livewire::test(AssistantChat::class)
+            ->set('message', 'Check the catalog')
+            ->call('send');
+
+        $this->actingAs(FixtureUser::query()->create(['allowed' => true]));
+
+        Livewire::test(AssistantChat::class)->assertSetStrict('history', []);
+        $chat->call('clearChat')->assertForbidden();
     }
 
     public function test_a_create_draft_does_not_write_until_native_create_is_clicked(): void
