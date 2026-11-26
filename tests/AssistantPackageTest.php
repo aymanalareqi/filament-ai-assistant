@@ -37,6 +37,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema as StorageSchema;
 use Illuminate\Validation\ValidationException;
 use Laravel\Ai\AiServiceProvider;
+use Laravel\Ai\Prompts\AgentPrompt;
 use Laravel\Ai\Responses\Data\ToolCall;
 use Livewire\Livewire;
 use Livewire\LivewireServiceProvider;
@@ -118,6 +119,28 @@ final class AssistantPackageTest extends TestCase
 
         $this->actingAs(FixtureUser::query()->create(['allowed' => false]));
         Livewire::test(AssistantChat::class)->assertForbidden();
+    }
+
+    public function test_chat_uses_the_instructions_configured_by_the_host(): void
+    {
+        $instructions = "Use the store's terminology.\nReply concisely.";
+        config(['filament-ai-assistant.instructions' => $instructions]);
+        AssistantAgent::fake(['Ready.'])->preventStrayPrompts();
+
+        Livewire::test(AssistantChat::class)
+            ->set('message', 'What can you do?')
+            ->call('send')
+            ->assertHasNoErrors();
+
+        AssistantAgent::assertPrompted(fn (AgentPrompt $prompt): bool => $prompt->agent->instructions() === $instructions);
+    }
+
+    public function test_chat_uses_the_default_instructions_without_an_override(): void
+    {
+        $instructions = app(AssistantAgent::class)->instructions();
+
+        $this->assertStringContainsString('Respond in the language of the user', $instructions);
+        $this->assertStringContainsString('A draft is not a saved change.', $instructions);
     }
 
     public function test_chat_prepares_a_draft_and_the_unmodified_native_page_validates_and_saves_it(): void
