@@ -12,6 +12,10 @@ return [
         'find' => 'ساعدني في العثور على سجل.',
     ],
     'you' => 'أنت',
+    'current_record' => 'السجل الحالي',
+    'record_not_attached' => 'غير مرفق برسالتك',
+    'detach_record' => 'إلغاء الإرفاق',
+    'attach_record' => 'إرفاق',
     'draft_status' => 'جاهزة للمراجعة',
     'draft_for' => 'مسودة لـ :resource',
     'before' => 'الحالي',
@@ -43,6 +47,7 @@ return [
         'incomplete' => 'اكتمل تنفيذ الإجراء على :success من أصل :total من السجلات.',
     ],
     'errors' => [
+        'current_record_unavailable' => 'لم يعد هذا السجل متاحًا. أعد فتح صفحته أو ألغِ إرفاقه للمتابعة.',
         'action_unavailable' => 'هذا الإجراء غير متاح لهذه السجلات.',
         'selection_required' => 'حدّد الصفوف في جدول المورد، ثم اختر «استخدام المحدد في المساعد».',
         'selection_size' => 'حدّد حتى :max صفًا بعينه. لا يدعم المساعد تحديد جميع النتائج دفعة واحدة.',

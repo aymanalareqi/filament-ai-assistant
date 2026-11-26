@@ -12,10 +12,14 @@ use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Contracts\View\View;
 use Illuminate\Support\Facades\Gate;
 
+/** @phpstan-type QuickPrompt array{label: string, prompt: string, icon?: string, requiresRecord?: bool} */
 final class FilamentAiAssistantPlugin implements Plugin
 {
     /** @var string|Closure(): string|null */
     private string|Closure|null $instructions = null;
+
+    /** @var list<QuickPrompt>|(Closure(): list<QuickPrompt>)|null */
+    private array|Closure|null $quickPrompts = null;
 
     private ?Closure $authorizer = null;
 
@@ -75,6 +79,35 @@ final class FilamentAiAssistantPlugin implements Plugin
     public function getInstructions(): ?string
     {
         return $this->instructions instanceof Closure ? ($this->instructions)() : $this->instructions;
+    }
+
+    /** @param list<QuickPrompt>|(Closure(): list<QuickPrompt>) $prompts */
+    public function quickPrompts(array|Closure $prompts): self
+    {
+        $this->quickPrompts = $prompts;
+
+        return $this;
+    }
+
+    /** @return list<QuickPrompt> */
+    public function getQuickPrompts(): array
+    {
+        if ($this->quickPrompts instanceof Closure) {
+            return ($this->quickPrompts)();
+        }
+
+        return $this->quickPrompts ?? [
+            [
+                'label' => __('filament-ai-assistant::assistant.examples.manage'),
+                'prompt' => __('filament-ai-assistant::assistant.examples.manage'),
+                'icon' => 'heroicon-o-chat-bubble-left-right',
+            ],
+            [
+                'label' => __('filament-ai-assistant::assistant.examples.find'),
+                'prompt' => __('filament-ai-assistant::assistant.examples.find'),
+                'icon' => 'heroicon-o-magnifying-glass',
+            ],
+        ];
     }
 
     /**

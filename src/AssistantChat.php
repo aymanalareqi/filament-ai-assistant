@@ -45,7 +45,10 @@ final class AssistantChat extends Component
             'text' => $entry['role'] === 'assistant' ? $this->formatReply($entry['text'], $resourceSlugs) : $entry['text'],
         ], $this->history);
 
-        return view('filament-ai-assistant::assistant', ['messages' => $messages]);
+        return view('filament-ai-assistant::assistant', [
+            'messages' => $messages,
+            'quickPrompts' => FilamentAiAssistantPlugin::current()?->getQuickPrompts() ?? [],
+        ]);
     }
 
     public function mount(DraftStore $drafts): void
@@ -75,7 +78,7 @@ final class AssistantChat extends Component
         $this->selection = null;
     }
 
-    public function send(ResourceRegistry $resources, DraftStore $drafts): void
+    public function send(ResourceRegistry $resources, DraftStore $drafts, CurrentRecordContext $context, ?string $recordContextToken = null): void
     {
         $this->authorizeConversation();
         $this->message = trim($this->message);
@@ -93,8 +96,15 @@ final class AssistantChat extends Component
             return;
         }
 
+        $currentRecord = $recordContextToken === null ? null : $context->resolve($recordContextToken);
+        if ($recordContextToken !== null && $currentRecord === null) {
+            $this->addError('message', __('filament-ai-assistant::assistant.errors.current_record_unavailable'));
+
+            return;
+        }
+
         RateLimiter::hit($key);
-        $agent = new AssistantAgent($resources, $drafts, array_slice($this->history, -10));
+        $agent = new AssistantAgent($resources, $drafts, array_slice($this->history, -10), $currentRecord);
 
         try {
             $response = $agent->prompt(

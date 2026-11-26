@@ -3,7 +3,17 @@
     data-filament-ai-assistant
     x-data="{
         open: false,
+        sending: false,
+        recordContext: null,
+        includeRecord: true,
+        syncRecordContext() {
+            const next = document.querySelector('[data-fia-record-context]')?.dataset;
+            if ((this.recordContext?.token ?? null) === (next?.token ?? null)) return;
+            this.recordContext = next?.token ? { token: next.token, label: next.recordLabel, resource: next.resourceLabel } : null;
+            this.includeRecord = true;
+        },
         showChat() {
+            this.syncRecordContext();
             this.open = true;
             this.$nextTick(() => {
                 this.scrollToLatest();
@@ -21,7 +31,20 @@
             this.$wire.$set('message', prompt, false);
             this.$refs.message.focus({ preventScroll: true });
         },
+        async submitMessage() {
+            if (this.sending) return;
+            this.syncRecordContext();
+            this.sending = true;
+            this.$nextTick(() => this.scrollToLatest());
+            try {
+                await this.$wire.send(this.includeRecord ? (this.recordContext?.token ?? null) : null);
+            } finally {
+                this.sending = false;
+            }
+        },
     }"
+    x-init="syncRecordContext()"
+    x-on:livewire:navigated.document="syncRecordContext()"
     x-on:keydown.escape.stop="if (open) closeChat()"
     x-on:filament-ai-assistant-response.window="$nextTick(() => scrollToLatest())"
     x-on:filament-ai-assistant-selection.window="showChat(); $wire.refreshSelection()"
@@ -65,6 +88,17 @@
             </div>
         </header>
 
+        <div class="fia-record-context" x-show="recordContext" x-cloak>
+            <x-filament::icon icon="heroicon-o-document-text" class="fia-icon" aria-hidden="true" />
+            <div class="fia-record-details" aria-live="polite">
+                <small>{{ __('filament-ai-assistant::assistant.current_record') }}</small>
+                <span x-show="includeRecord" x-text="recordContext ? recordContext.resource + ' · ' + recordContext.label : ''" dir="auto"></span>
+                <span x-show="!includeRecord">{{ __('filament-ai-assistant::assistant.record_not_attached') }}</span>
+            </div>
+            <button type="button" class="fia-record-toggle" x-on:click="includeRecord = !includeRecord"
+                x-text="includeRecord ? @js(__('filament-ai-assistant::assistant.detach_record')) : @js(__('filament-ai-assistant::assistant.attach_record'))"></button>
+        </div>
+
         @if ($selection)
             <div class="fia-selection">
                 <x-filament::icon icon="heroicon-o-check-circle" class="fia-icon" aria-hidden="true" />
@@ -103,16 +137,19 @@
                         <h3>{{ __('filament-ai-assistant::assistant.welcome') }}</h3>
                         <p>{{ __('filament-ai-assistant::assistant.intro') }}</p>
                     </div>
-                    <div class="fia-prompts">
-                        @foreach (['manage' => 'heroicon-o-chat-bubble-left-right', 'find' => 'heroicon-o-magnifying-glass'] as $example => $icon)
-                            <button type="button" class="fia-prompt"
-                                x-on:click="usePrompt(@js(__('filament-ai-assistant::assistant.examples.'.$example)))">
-                                <x-filament::icon :icon="$icon" class="fia-icon" aria-hidden="true" />
-                                <span>{{ __('filament-ai-assistant::assistant.examples.'.$example) }}</span>
-                                <x-filament::icon icon="heroicon-o-arrow-up-right" class="fia-icon fia-directional" aria-hidden="true" />
-                            </button>
-                        @endforeach
-                    </div>
+                    @if ($quickPrompts !== [])
+                        <div class="fia-prompts">
+                            @foreach ($quickPrompts as $quickPrompt)
+                                <button type="button" class="fia-prompt"
+                                    @if ($quickPrompt['requiresRecord'] ?? false) x-show="recordContext && includeRecord" x-cloak @endif
+                                    x-on:click="usePrompt(@js($quickPrompt['prompt']))">
+                                    <x-filament::icon :icon="$quickPrompt['icon'] ?? 'heroicon-o-chat-bubble-left-right'" class="fia-icon" aria-hidden="true" />
+                                    <span>{{ $quickPrompt['label'] }}</span>
+                                    <x-filament::icon icon="heroicon-o-arrow-up-right" class="fia-icon fia-directional" aria-hidden="true" />
+                                </button>
+                            @endforeach
+                        </div>
+                    @endif
                 </div>
             @endif
 
@@ -168,12 +205,13 @@
             </div>
         </div>
 
-        <form class="fia-compose" wire:submit="send" x-on:submit="$nextTick(() => scrollToLatest())">
+        <form class="fia-compose" x-on:submit.prevent="submitMessage()">
             <div class="fia-input">
                 <label class="fia-sr-only" for="fia-message-{{ $this->getId() }}">{{ __('filament-ai-assistant::assistant.message') }}</label>
-                <textarea id="fia-message-{{ $this->getId() }}" x-ref="message" wire:model="message" rows="2" maxlength="2000" dir="auto"
+                <textarea id="fia-message-{{ $this->getId() }}" x-ref="message" wire:model="message"
+                    wire:loading.attr="readonly" wire:target="send" rows="2" maxlength="2000" dir="auto"
                     placeholder="{{ __('filament-ai-assistant::assistant.placeholder') }}" @error('message') aria-invalid="true" aria-describedby="fia-error-{{ $this->getId() }}" @enderror></textarea>
-                <button type="submit" class="fia-send" wire:loading.attr="disabled"
+                <button type="submit" class="fia-send" wire:loading.attr="disabled" x-bind:disabled="sending"
                     title="{{ __('filament-ai-assistant::assistant.send') }}" aria-label="{{ __('filament-ai-assistant::assistant.send') }}">
                     <x-filament::icon icon="heroicon-o-arrow-up" class="fia-icon" aria-hidden="true" />
                 </button>

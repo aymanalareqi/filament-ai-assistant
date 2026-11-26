@@ -5,6 +5,7 @@ namespace Alareqi\FilamentAiAssistant;
 use Filament\Resources\Pages\CreateRecord;
 use Filament\Resources\Pages\EditRecord;
 use Filament\Resources\Pages\ListRecords;
+use Filament\Resources\Pages\ViewRecord;
 use Filament\Support\Assets\Css;
 use Filament\Support\Facades\FilamentAsset;
 use Illuminate\Support\ServiceProvider;
@@ -34,6 +35,12 @@ final class FilamentAiAssistantServiceProvider extends ServiceProvider
 
         // The native resource page has mounted and authorized the record before rendering its form.
         Livewire::listen('render', static function (Component $component): void {
+            if (($component instanceof EditRecord || $component instanceof ViewRecord)
+                && request()->isMethod('GET') && request()->routeIs($component::getRouteName())) {
+                request()->attributes->set('filament-ai-assistant.current-record',
+                    app(CurrentRecordContext::class)->issue($component::getResource(), $component->getRecord()));
+            }
+
             $actionId = request()->query('assistantAction');
             if (($component instanceof ListRecords || $component instanceof EditRecord)
                 && is_string($actionId) && Str::isUuid($actionId)) {

@@ -12,6 +12,10 @@ return [
         'find' => 'Help me find a record.',
     ],
     'you' => 'You',
+    'current_record' => 'Current record',
+    'record_not_attached' => 'Not attached to your message',
+    'detach_record' => 'Detach',
+    'attach_record' => 'Attach',
     'draft_status' => 'Ready for review',
     'draft_for' => 'Draft for :resource',
     'before' => 'Current',
@@ -43,6 +47,7 @@ return [
         'incomplete' => 'Action completed for :success of :total records.',
     ],
     'errors' => [
+        'current_record_unavailable' => 'This record is no longer available. Reopen its page or detach it to continue.',
         'action_unavailable' => 'This action is not available for these records.',
         'selection_required' => 'Select the rows in this resource’s table and choose “Use selection in assistant”.',
         'selection_size' => 'Select up to :max specific rows. Selecting all matching records is not supported.',

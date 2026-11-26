@@ -23,16 +23,26 @@ final class AssistantAgent implements Agent, Conversational, HasTools
     /** @var array<string, mixed>|null */
     private ?array $draft = null;
 
-    /** @param list<array{role: string, text: string}> $history */
+    /**
+     * @param  list<array{role: string, text: string}>  $history
+     * @param  array{resource: string, record_id: string, resource_label: string, record_label: string, can_edit: bool}|null  $currentRecord
+     */
     public function __construct(
         private ResourceRegistry $resources,
         private DraftStore $drafts,
         private array $history = [],
+        private ?array $currentRecord = null,
     ) {}
 
     public function instructions(): string
     {
-        return FilamentAiAssistantPlugin::current()?->getInstructions() ?? Config::string('filament-ai-assistant.instructions');
+        $instructions = FilamentAiAssistantPlugin::current()?->getInstructions() ?? Config::string('filament-ai-assistant.instructions');
+
+        if ($this->currentRecord === null) {
+            return $instructions;
+        }
+
+        return $instructions."\n\nA record from the current panel page is attached to this message. Call current_record when the user says “this record” or talks about the record on the page. Use that tool's resource and record ID, unless the user explicitly identifies a different target. Never assume that the current record is the same as a record mentioned in chat history.";
     }
 
     public function messages(): iterable
@@ -53,6 +63,12 @@ final class AssistantAgent implements Agent, Conversational, HasTools
         $actions = app(ActionProposalStore::class);
 
         return [
+            ...($this->currentRecord === null ? [] : [
+                new AssistantTool('current_record', 'Identify the exact authorized record attached from the page for this message. Does not change anything.',
+                    fn (JsonSchema $schema): array => [],
+                    fn (): array => ['record' => $this->currentRecord],
+                ),
+            ]),
             new AssistantTool('list_resources', 'List accessible panel resources and operations. Edit permission is checked per record.',
                 fn (JsonSchema $schema): array => [],
                 fn (Request $request): array => $this->resources->catalog(),
@@ -108,7 +124,7 @@ final class AssistantAgent implements Agent, Conversational, HasTools
                 fn (JsonSchema $schema): array => [],
                 fn (): array => ['selection' => $actions->selection()],
             ),
-            new AssistantTool('prepare_action', 'Prepare an existing Filament action for review only. It does not run the action. For publish, unpublish, or bulk_delete, use the entire confirmed resource table selection and never supply record_id. For delete, use the exact single ID from search_records. If the target is ambiguous, ask before preparing it.',
+            new AssistantTool('prepare_action', 'Prepare an existing Filament action for review only. It does not run the action. For publish, unpublish, or bulk_delete, use the entire confirmed resource table selection and never supply record_id. For delete, use the exact single ID from current_record or search_records. If the target is ambiguous, ask before preparing it.',
                 fn (JsonSchema $schema): array => [
                     'resource' => $schema->string()->required(),
                     'operation' => $schema->string()->enum(ActionProposalStore::OPERATIONS)->required(),
@@ -138,7 +154,7 @@ final class AssistantAgent implements Agent, Conversational, HasTools
         return [
             'resource' => $schema->string()->required(),
             'operation' => $schema->string()->enum(['create', 'edit'])->required(),
-            'record_id' => $schema->string()->description('The exact ID returned by search_records for an edit. Omit for a create.'),
+            'record_id' => $schema->string()->description('The exact ID returned by current_record or search_records for an edit. Omit for a create.'),
         ];
     }
 

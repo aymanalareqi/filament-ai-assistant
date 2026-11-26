@@ -6,6 +6,7 @@ use Alareqi\FilamentAiAssistant\ActionProposalStore;
 use Alareqi\FilamentAiAssistant\AssistantAgent;
 use Alareqi\FilamentAiAssistant\AssistantChat;
 use Alareqi\FilamentAiAssistant\AssistantSelectionAction;
+use Alareqi\FilamentAiAssistant\CurrentRecordContext;
 use Alareqi\FilamentAiAssistant\DraftStore;
 use Alareqi\FilamentAiAssistant\FilamentAiAssistantPlugin;
 use Alareqi\FilamentAiAssistant\FilamentAiAssistantServiceProvider;
@@ -46,6 +47,7 @@ use Illuminate\Validation\ValidationException;
 use Laravel\Ai\AiServiceProvider;
 use Laravel\Ai\Prompts\AgentPrompt;
 use Laravel\Ai\Responses\Data\ToolCall;
+use Laravel\Ai\Tools\Request as ToolRequest;
 use Livewire\Livewire;
 use Livewire\LivewireServiceProvider;
 use Orchestra\Testbench\TestCase;
@@ -149,6 +151,87 @@ final class AssistantPackageTest extends TestCase
 
         $this->assertStringContainsString('Respond in the language of the user', $instructions);
         $this->assertStringContainsString('A draft is not a saved change.', $instructions);
+    }
+
+    public function test_the_chat_gives_the_agent_the_authorized_current_record_for_this_message(): void
+    {
+        $entry = Entry::query()->create(['name' => 'Current entry', 'secret_code' => 'private']);
+        $token = app(CurrentRecordContext::class)->issue(EntryResource::class, $entry)['token'];
+        AssistantAgent::fake(['Ready.', 'Ready.'])->preventStrayPrompts();
+
+        $chat = Livewire::test(AssistantChat::class)
+            ->set('message', 'Help me edit this record')
+            ->call('send', $token)
+            ->assertHasNoErrors();
+
+        AssistantAgent::assertPrompted(function (AgentPrompt $prompt) use ($entry): bool {
+            $tool = collect($prompt->agent->tools())->first(fn ($tool): bool => $tool->name() === 'current_record');
+            $record = $tool ? json_decode($tool->handle(new ToolRequest), true)['record'] : null;
+
+            return $prompt->contains('this record') && $record === [
+                'resource' => 'entries',
+                'record_id' => (string) $entry->id,
+                'resource_label' => 'entry',
+                'record_label' => 'Current entry',
+                'can_edit' => true,
+            ];
+        });
+
+        $chat->set('message', 'This page has no record')->call('send')->assertHasNoErrors();
+        AssistantAgent::assertPrompted(fn (AgentPrompt $prompt): bool => $prompt->contains('no record')
+            && ! collect($prompt->agent->tools())->contains(fn ($tool): bool => $tool->name() === 'current_record'));
+    }
+
+    public function test_the_chat_rejects_tampered_context_and_context_from_another_admin(): void
+    {
+        $entry = Entry::query()->create(['name' => 'Current entry']);
+        $token = app(CurrentRecordContext::class)->issue(EntryResource::class, $entry)['token'];
+        AssistantAgent::fake()->preventStrayPrompts();
+
+        Livewire::test(AssistantChat::class)
+            ->set('message', 'Edit this record')
+            ->call('send', 'tampered-'.$token)
+            ->assertHasErrors('message');
+
+        $this->actingAs(FixtureUser::query()->create(['allowed' => true]));
+        Livewire::test(AssistantChat::class)
+            ->set('message', 'Edit this record')
+            ->call('send', $token)
+            ->assertHasErrors('message');
+
+        AssistantAgent::assertNeverPrompted();
+    }
+
+    public function test_record_context_is_rechecked_when_resource_access_changes(): void
+    {
+        $entry = Entry::query()->create(['name' => 'Current entry']);
+        $token = app(CurrentRecordContext::class)->issue(EntryResource::class, $entry)['token'];
+        FilamentAiAssistantPlugin::current()->allowResourceUsing(fn (string $resource): bool => $resource !== EntryResource::class);
+        AssistantAgent::fake()->preventStrayPrompts();
+
+        Livewire::test(AssistantChat::class)
+            ->set('message', 'Edit this record')
+            ->call('send', $token)
+            ->assertSee('This record is no longer available.')
+            ->assertHasErrors('message');
+
+        AssistantAgent::assertNeverPrompted();
+    }
+
+    public function test_a_panel_can_replace_the_default_quick_prompts_without_sending_a_message(): void
+    {
+        FilamentAiAssistantPlugin::current()->quickPrompts(fn (): array => [
+            ['label' => 'Check inventory', 'prompt' => 'Help me check product inventory.'],
+        ]);
+        AssistantAgent::fake()->preventStrayPrompts();
+
+        Livewire::test(AssistantChat::class)
+            ->assertSee('Check inventory')
+            ->assertSee('Help me check product inventory.')
+            ->assertDontSee('What can I manage here?')
+            ->assertSet('message', '');
+
+        AssistantAgent::assertNeverPrompted();
     }
 
     public function test_each_panel_can_override_the_assistant_instructions(): void
