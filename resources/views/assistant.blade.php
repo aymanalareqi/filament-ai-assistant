@@ -67,7 +67,7 @@
         <div class="fia-thread" x-ref="thread">
             @if (count($history))
                 <div class="fia-messages" role="log" aria-live="polite">
-                    @foreach ($history as $entry)
+                    @foreach ($messages as $entry)
                         @php($isUser = $entry['role'] === 'user')
                         <article @class(['fia-message', 'fia-message-user' => $isUser])>
                             @unless ($isUser)
@@ -77,7 +77,7 @@
                             @endunless
                             <div class="fia-message-body">
                                 <p class="fia-message-author">{{ __('filament-ai-assistant::assistant.'.($isUser ? 'you' : 'title')) }}</p>
-                                <div class="fia-bubble" dir="auto">{{ $entry['text'] }}</div>
+                                <div @class(['fia-bubble', 'fia-bubble-reply' => ! $isUser]) dir="auto">{{ $entry['text'] }}</div>
                             </div>
                         </article>
                     @endforeach

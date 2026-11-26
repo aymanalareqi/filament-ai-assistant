@@ -6,6 +6,7 @@ use Filament\Facades\Filament;
 use Illuminate\Contracts\View\View;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\HtmlString;
 use Illuminate\Support\Str;
 use Livewire\Attributes\Locked;
 use Livewire\Component;
@@ -33,7 +34,14 @@ final class AssistantChat extends Component
 
     public function render(): View
     {
-        return view('filament-ai-assistant::assistant');
+        $panel = Filament::getCurrentPanel();
+        $resourceSlugs = array_map(fn (string $resource): string => $resource::getSlug($panel), $panel?->getResources() ?? []);
+        $messages = array_map(fn (array $entry): array => [
+            'role' => $entry['role'],
+            'text' => $entry['role'] === 'assistant' ? $this->formatReply($entry['text'], $resourceSlugs) : $entry['text'],
+        ], $this->history);
+
+        return view('filament-ai-assistant::assistant', ['messages' => $messages]);
     }
 
     public function mount(DraftStore $drafts): void
@@ -112,6 +120,27 @@ final class AssistantChat extends Component
     private function authorizeConversation(): void
     {
         abort_unless(self::canAccess() && $this->scope === FilamentAiAssistantPlugin::current()->chatScope(), 403);
+    }
+
+    /** @param array<string> $resourceSlugs */
+    private function formatReply(string $text, array $resourceSlugs): HtmlString
+    {
+        $text = preg_replace_callback(
+            '~\h+\(\h*([\x60"\']?)([\p{L}\p{N}._/-]+)\1\h*\)~u',
+            fn (array $match): string => in_array($match[2], $resourceSlugs, true) ? '' : $match[0],
+            $text,
+        ) ?? $text;
+
+        $html = Str::markdown($text, [
+            'html_input' => 'strip',
+            'allow_unsafe_links' => false,
+            'renderer' => ['soft_break' => "<br>\n"],
+        ]);
+
+        return new HtmlString(trim(strip_tags($html, [
+            'p', 'br', 'strong', 'em', 'del', 'ul', 'ol', 'li', 'blockquote', 'pre', 'code',
+            'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'table', 'thead', 'tbody', 'tr', 'th', 'td',
+        ])));
     }
 
     private function restoreConversation(DraftStore $drafts): void

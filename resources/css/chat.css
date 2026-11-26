@@ -220,6 +220,16 @@
     background: var(--fia-tint);
 }
 
+.fia-bubble-reply { white-space: normal; }
+.fia-bubble-reply > * + * { margin-block-start: .5em; }
+.fia-bubble-reply :is(ul, ol) { padding-inline-start: 1.25em; }
+.fia-bubble-reply ul { list-style: disc; }
+.fia-bubble-reply ol { list-style: decimal; }
+.fia-bubble-reply :is(strong, h1, h2, h3, h4, h5, h6, th) { font-weight: 700; }
+.fia-bubble-reply blockquote { padding-inline-start: .625rem; border-inline-start: 2px solid var(--fia-line); }
+.fia-bubble-reply pre { white-space: pre-wrap; }
+.fia-bubble-reply :is(th, td) { padding: .25em .4em; border: 1px solid var(--fia-line); }
+
 .fia-draft {
     display: grid;
     gap: .75rem;

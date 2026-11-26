@@ -208,6 +208,41 @@ final class AssistantPackageTest extends TestCase
         Livewire::test(AssistantChat::class)->assertSetStrict('history', []);
     }
 
+    public function test_chat_formats_assistant_replies_and_hides_resource_slugs_after_reload(): void
+    {
+        AssistantAgent::fake(["يمكنني مساعدتك في **المنتجات (`entries`)**.\nمعلومة إضافية (اختياري)."])->preventStrayPrompts();
+
+        $chat = Livewire::test(AssistantChat::class)
+            ->set('message', '**نص المستخدم**')
+            ->call('send')
+            ->assertHasNoErrors()
+            ->assertSee('**نص المستخدم**')
+            ->assertSeeHtml('<strong>المنتجات</strong>')
+            ->assertDontSee('(`entries`)')
+            ->assertSee('(اختياري)');
+
+        $this->assertStringContainsString('(`entries`)', $chat->get('history')[1]['text']);
+
+        Livewire::test(AssistantChat::class)->assertSeeHtml('<strong>المنتجات</strong>');
+    }
+
+    public function test_formatted_replies_do_not_render_raw_html_images_or_links(): void
+    {
+        AssistantAgent::fake([
+            'هذه **إجابة** <span onclick="alert(1)">مع نص</span> ![صورة](https://example.test/image) [رابط](https://example.test/page).',
+        ])->preventStrayPrompts();
+
+        Livewire::test(AssistantChat::class)
+            ->set('message', 'Test formatting')
+            ->call('send')
+            ->assertSeeHtml('<strong>إجابة</strong>')
+            ->assertSee('مع نص')
+            ->assertSee('رابط')
+            ->assertDontSeeHtml('onclick="alert(1)"')
+            ->assertDontSeeHtml('<img')
+            ->assertDontSeeHtml('href="https://example.test/page"');
+    }
+
     public function test_a_different_authorized_account_cannot_restore_or_update_the_chat(): void
     {
         AssistantAgent::fake(['This is only for the first account.'])->preventStrayPrompts();
