@@ -2,12 +2,14 @@
 
 namespace Alareqi\FilamentAiAssistant;
 
-use Filament\Actions\BulkAction;
+use Filament\Actions\Action;
 use Filament\Actions\DeleteAction;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Facades\Filament;
 use Filament\Resources\Pages\EditRecord;
 use Filament\Resources\Pages\ListRecords;
+use Filament\Resources\Pages\Page;
+use Filament\Resources\Pages\ViewRecord;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Collection;
@@ -18,26 +20,26 @@ use Illuminate\Validation\ValidationException;
 
 final class ActionProposalStore
 {
-    public const OPERATIONS = ['publish', 'unpublish', 'delete', 'bulk_delete'];
-
     public const MAX_RECORDS = 100;
 
-    public function __construct(private ResourceRegistry $resources) {}
+    public function __construct(private ResourceRegistry $resources, private NativeResourceActions $native) {}
 
-    /** @return list<string> */
-    public function available(string $resource): array
+    /**
+     * @param  array{resource: string, label: string, records: list<array{id: string, label: string}>}|null  $selection
+     * @return list<array{id: string, label: string, surface: string, input: bool}>
+     */
+    public function describeActions(string $slug, ?string $recordId, ?array $selection = null): array
     {
-        $plugin = FilamentAiAssistantPlugin::current();
-
-        if (! $plugin?->canUse() || ! $plugin->allowsResource($resource) || ! $resource::canViewAny()) {
+        $resource = $this->resources->resource($slug);
+        if (! FilamentAiAssistantPlugin::current()->hasActionDiscovery($resource)) {
             return [];
         }
+        $record = $recordId === null ? null : $this->records($resource, [$recordId])->first();
+        if ($record !== null && ! $this->canSee($resource, $record)) {
+            $this->invalid('action_unavailable');
+        }
 
-        return array_values(array_filter($plugin->getResourceActions($resource), fn (string $operation): bool => match ($operation) {
-            'delete' => $this->supportsPage($resource, 'edit', EditRecord::class),
-            'bulk_delete' => $this->supportsPage($resource, 'index', ListRecords::class) && $resource::canDeleteAny(),
-            default => $this->supportsPage($resource, 'index', ListRecords::class),
-        }));
+        return $this->native->describe($resource, $record, ($selection['resource'] ?? null) === $slug ? array_column($selection['records'], 'id') : []);
     }
 
     /**
@@ -70,22 +72,34 @@ final class ActionProposalStore
     public function prepare(string $slug, string $operation, ?string $recordId, ?array $selection = null): array
     {
         $resource = $this->resources->resource($slug);
-        if (! in_array($operation, $this->available($resource), true)) {
+        $key = $this->native->canonical($operation);
+        $surface = $this->native->surface($key);
+        if (! str_contains($key, ':') || ! FilamentAiAssistantPlugin::current()->hasActionDiscovery($resource)) {
             $this->invalid('action_unavailable');
         }
 
-        $bulk = $operation !== 'delete';
-        if ($bulk && ($selection === null || $selection['resource'] !== $slug)) {
+        $bulk = $surface === 'bulk';
+        if ($bulk && ($selection === null || $selection['resource'] !== $slug || $selection['records'] === [])) {
             $this->invalid('selection_required');
         }
 
-        if (! $bulk && blank($recordId)) {
+        if ($this->native->requiresRecord($surface) && blank($recordId)) {
             $this->invalid('select_record');
         }
+        if (! $this->native->requiresRecord($surface) && $recordId !== null) {
+            $this->invalid('action_unavailable');
+        }
 
-        $ids = $bulk ? array_column($selection['records'], 'id') : [$recordId];
+        $ids = $bulk ? array_column($selection['records'], 'id') : ($recordId === null ? [] : [$recordId]);
         $records = $this->records($resource, $ids);
-        if (! $records->every(fn (Model $record): bool => $this->canAct($resource, $operation, $record))) {
+        if (! $records->every(fn (Model $record): bool => $this->canSee($resource, $record))) {
+            $this->invalid('action_unavailable');
+        }
+
+        $page = $this->native->page($resource, $surface, $records->first(), $bulk ? $ids : []);
+        $action = $page === null ? null : $this->native->resolve($page, $key, $recordId);
+        if ($action === null || ! $this->native->canReview($page, $key, $action)
+            || ! $this->canAct($resource, $action, $records)) {
             $this->invalid('action_unavailable');
         }
 
@@ -94,24 +108,27 @@ final class ActionProposalStore
         $proposals[$id] = [
             'scope' => FilamentAiAssistantPlugin::current()->chatScope(),
             'resource' => $resource,
-            'operation' => $operation,
+            'action' => $key,
             'ids' => $ids,
             'versions' => $this->versions($records),
             'expires' => now()->addMinutes(30)->timestamp,
         ];
         session()->put('filament-ai-assistant.actions', array_slice($proposals, -8, preserve_keys: true));
 
+        $pageKey = $this->native->pageKey($surface);
+
         return [
             'id' => $id,
             'kind' => 'action',
             'operation' => $operation,
-            'url' => $resource::getUrl($bulk ? 'index' : 'edit', [
-                ...($bulk ? [] : ['record' => $records->first()]),
+            'action_label' => $this->native->label($action),
+            'url' => $resource::getUrl($pageKey, [
+                ...(in_array($pageKey, ['view', 'edit'], true) ? ['record' => $records->first()] : []),
                 'assistantAction' => $id,
             ]),
-            'label' => $bulk ? $resource::getPluralModelLabel() : $resource::getModelLabel(),
+            'label' => $recordId === null ? $resource::getPluralModelLabel() : $resource::getModelLabel(),
             'records' => $records->map(fn (Model $record): array => $this->recordPreview($resource, $record))->all(),
-            'warning' => $this->deleteWarning($resource, $operation, $records->first()),
+            'warning' => $this->deleteWarning($resource, $action, $records->first()),
         ];
     }
 
@@ -121,52 +138,36 @@ final class ActionProposalStore
             && ! Cache::has($this->confirmationKey($id));
     }
 
-    public function open(ListRecords|EditRecord $page, string $id): void
+    public function open(Page $page, string $id): void
     {
         if (session()->has($this->reviewKey($page))) {
             return;
         }
 
         $proposal = $this->validated($page, $id);
-        $operation = $proposal['operation'];
-        $bulk = $operation !== 'delete';
-        $actionName = $operation === 'bulk_delete' ? 'delete' : $operation;
-        abort_if(filled($page->mountedActions) || filled($page->defaultAction) || filled($page->defaultTableAction), 409);
+        $surface = $this->native->surface($proposal['action']);
+        abort_if(filled($page->mountedActions) || filled($page->defaultAction ?? null) || filled($page->defaultTableAction ?? null), 409);
 
-        if ($bulk) {
+        if ($surface === 'bulk' && $page instanceof ListRecords) {
             $page->selectedTableRecords = $proposal['ids'];
             $page->deselectedTableRecords = [];
             $page->isTrackingDeselectedTableRecords = false;
             $this->verifySelection($page, $proposal['ids']);
-            $action = $page->getTable()->getBulkAction($actionName);
-            abort_unless($action instanceof BulkAction && $action->shouldFetchSelectedRecords(), 403);
-            abort_if($operation === 'bulk_delete' && ! $action instanceof DeleteBulkAction, 403);
-        } else {
-            $action = $page->getAction($actionName, isMounting: false);
-            abort_unless($action instanceof DeleteAction, 403);
         }
 
-        abort_unless($action->isVisible() && ! $action->isDisabled() && $action->isAuthorized()
-            && $action->isConfirmationRequired() && $action->shouldOpenModal(), 403);
-
-        $details = $bulk
-            ? __('filament-ai-assistant::assistant.actions.confirm_many', ['count' => count($proposal['ids'])])
-            : __('filament-ai-assistant::assistant.actions.confirm_one', ['record' => $this->recordPreview($page::getResource(), $page->getRecord())['label']]);
-        if ($warning = $this->deleteWarning($page::getResource(), $operation,
-            $bulk ? $page->getSelectedTableRecords()->first() : $page->getRecord())) {
-            $details .= ' '.$warning;
-        }
-        $action->modalDescription($details);
+        $action = $this->native->resolve($page, $proposal['action'], $proposal['ids'][0] ?? null);
+        $this->authorizeAction($page, $proposal, $action);
 
         $page->forceRender();
-        $page->mountAction($actionName, context: $this->actionContext($id, $bulk));
-        abort_unless($page->getMountedAction()?->getName() === $actionName, 403);
+        $page->mountAction($action->getName(), context: $this->actionContext($id, $proposal));
+        abort_unless($page->getMountedAction()?->getName() === $action->getName()
+            && ($page->mountedActions[0]['context'] ?? null) === $this->actionContext($id, $proposal), 403);
         session()->put($this->reviewKey($page), $id);
         request()->attributes->set('filament-ai-assistant.action-component', $page->getId());
     }
 
     /** @return array<string,mixed>|null */
-    public function beforeConfirm(ListRecords|EditRecord $page, array $parameters): ?array
+    public function beforeConfirm(Page $page, array $parameters): ?array
     {
         $id = session()->get($this->reviewKey($page));
         $mounted = $page->mountedActions[0] ?? [];
@@ -178,69 +179,75 @@ final class ActionProposalStore
         }
 
         $proposal = $this->validated($page, $id);
-        $operation = $proposal['operation'];
-        $bulk = $operation !== 'delete';
-        $actionName = $operation === 'bulk_delete' ? 'delete' : $operation;
-        abort_unless(count($page->mountedActions ?? []) === 1 && ($mounted['name'] ?? null) === $actionName
-            && ($mounted['context'] ?? null) === $this->actionContext($id, $bulk)
+        $surface = $this->native->surface($proposal['action']);
+        abort_unless(count($page->mountedActions ?? []) === 1 && ($mounted['name'] ?? null) === Str::after($proposal['action'], ':')
+            && ($mounted['context'] ?? null) === $this->actionContext($id, $proposal)
             && empty($mounted['arguments'] ?? []) && empty($parameters[0] ?? []), 409);
 
-        if ($bulk) {
+        if ($surface === 'bulk' && $page instanceof ListRecords) {
             $this->verifySelection($page, $proposal['ids']);
         }
 
-        $action = $page->getMountedAction();
-        abort_unless($action?->isAuthorized() && ! $action->isDisabled()
-            && $action->isConfirmationRequired() && $action->shouldOpenModal(), 403);
-        abort_if($bulk && (! $action instanceof BulkAction || ! $action->shouldFetchSelectedRecords()
-            || ($operation === 'bulk_delete' && ! $action instanceof DeleteBulkAction)), 403);
-        abort_if(! $bulk && ! $action instanceof DeleteAction, 403);
-        abort_unless(Cache::add($this->confirmationKey($id), true, max(1, $proposal['expires'] - now()->timestamp)), 409);
-
-        if ($bulk) {
-            $action->successNotificationTitle(fn (): string => __('filament-ai-assistant::assistant.actions.completed', ['count' => count($proposal['ids'])]));
-            $action->failureNotificationTitle(fn (int $successCount, int $totalCount): string => __('filament-ai-assistant::assistant.actions.incomplete', [
-                'success' => $successCount, 'total' => $totalCount,
-            ]));
-        }
+        $this->authorizeAction($page, $proposal, $page->getMountedAction());
 
         return ['id' => $id, ...$proposal];
     }
 
-    /** @param array<string,mixed> $proposal */
-    public function afterConfirm(ListRecords|EditRecord $page, array $proposal): void
+    public function claimConfirmation(Action $action): void
     {
+        $page = $action->getLivewire();
+        $id = $page instanceof Page ? ($page->mountedActions[0]['context']['assistantAction'] ?? null) : null;
+        if ($id === null) {
+            return;
+        }
+
+        abort_unless(is_string($id) && Str::isUuid($id) && session()->get($this->reviewKey($page)) === $id, 403);
+        $proposal = $this->validated($page, $id);
+        abort_unless(count($page->mountedActions) === 1 && $action->getName() === Str::after($proposal['action'], ':')
+            && ($page->mountedActions[0]['context'] ?? null) === $this->actionContext($id, $proposal), 409);
+        abort_unless(Cache::add($this->confirmationKey($id), true, max(1, $proposal['expires'] - now()->timestamp)), 409);
+    }
+
+    /** @param array<string,mixed> $proposal */
+    public function afterConfirm(Page $page, array $proposal): void
+    {
+        if (! Cache::has($this->confirmationKey($proposal['id']))) {
+            return;
+        }
+
         session()->forget('filament-ai-assistant.actions.'.$proposal['id']);
         $this->cancel($page);
 
         Log::info('Filament AI assistant action confirmed.', [
             'actor_id' => Filament::auth()->id(),
-            'operation' => $proposal['operation'],
+            'operation' => $proposal['action'],
             'resource' => $proposal['resource'],
             'record_ids' => $proposal['ids'],
         ]);
     }
 
-    public function cancel(ListRecords|EditRecord $page): void
+    public function cancel(Page $page): void
     {
         session()->forget($this->reviewKey($page));
     }
 
     /** @return array<string,mixed> */
-    private function validated(ListRecords|EditRecord $page, string $id): array
+    private function validated(Page $page, string $id): array
     {
         $plugin = FilamentAiAssistantPlugin::current();
         $proposal = session()->get('filament-ai-assistant.actions.'.$id);
         $resource = $page::getResource();
-        abort_unless($plugin?->canUse() && $proposal !== null && $proposal['scope'] === $plugin->chatScope()
-            && $proposal['resource'] === $resource && in_array($proposal['operation'], $this->available($resource), true), 403);
+        abort_unless($plugin?->canUse() && $plugin->allowsResource($resource) && $resource::canViewAny()
+            && $proposal !== null && $proposal['scope'] === $plugin->chatScope()
+            && $proposal['resource'] === $resource, 403);
+        $proposal['action'] ??= $this->native->canonical($proposal['operation'] ?? '');
         abort_unless($proposal['expires'] > now()->timestamp, 410, __('filament-ai-assistant::assistant.errors.expired'));
         abort_if(Cache::has($this->confirmationKey($id)), 409);
-        $pageName = $proposal['operation'] === 'delete' ? 'edit' : 'index';
-        abort_unless(($resource::getPages()[$pageName] ?? null)?->getPage() === $page::class, 403);
-        abort_unless($page instanceof EditRecord
-            ? $proposal['operation'] === 'delete' && $proposal['ids'] === [(string) $page->getRecord()->getKey()]
-            : $proposal['operation'] !== 'delete', 403);
+        $surface = $this->native->surface($proposal['action']);
+        abort_unless($this->native->pageClass($resource, $surface) === $page::class, 403);
+        if ($page instanceof EditRecord || $page instanceof ViewRecord) {
+            abort_unless($proposal['ids'] === [(string) $page->getRecord()->getKey()], 403);
+        }
 
         try {
             $records = $this->records($resource, $proposal['ids']);
@@ -248,10 +255,18 @@ final class ActionProposalStore
             abort(409, __('filament-ai-assistant::assistant.errors.changed'));
         }
 
-        abort_unless($records->every(fn (Model $record): bool => $this->canAct($resource, $proposal['operation'], $record)), 403);
+        abort_unless($records->every(fn (Model $record): bool => $this->canSee($resource, $record)), 403);
         abort_unless($this->versions($records) === $proposal['versions'], 409, __('filament-ai-assistant::assistant.errors.changed'));
 
         return $proposal;
+    }
+
+    /** @param array<string,mixed> $proposal */
+    private function authorizeAction(Page $page, array $proposal, ?Action $action): void
+    {
+        $resource = $page::getResource();
+        abort_unless($action !== null && $this->native->canReview($page, $proposal['action'], $action)
+            && $this->canAct($resource, $action, $this->records($resource, $proposal['ids'])), 403);
     }
 
     /** @param list<string> $ids */
@@ -300,18 +315,18 @@ final class ActionProposalStore
         return $resource::canView($record) || $resource::canEdit($record);
     }
 
-    private function canAct(string $resource, string $operation, Model $record): bool
+    private function canAct(string $resource, Action $action, Collection $records): bool
     {
-        return match ($operation) {
-            'delete' => $resource::canEdit($record) && $resource::canDelete($record),
-            'bulk_delete' => $this->canSee($resource, $record) && $resource::canDelete($record),
-            default => $resource::canEdit($record),
+        return match (true) {
+            $action instanceof DeleteAction => $records->every(fn (Model $record): bool => $resource::canDelete($record)),
+            $action instanceof DeleteBulkAction => $resource::canDeleteAny() && $records->every(fn (Model $record): bool => $resource::canDelete($record)),
+            default => true,
         };
     }
 
-    private function deleteWarning(string $resource, string $operation, Model $record): ?string
+    private function deleteWarning(string $resource, Action $action, ?Model $record): ?string
     {
-        if (! in_array($operation, ['delete', 'bulk_delete'], true)) {
+        if ($record === null || ! ($action instanceof DeleteAction || $action instanceof DeleteBulkAction)) {
             return null;
         }
 
@@ -322,14 +337,7 @@ final class ActionProposalStore
         return implode(' ', array_filter([$permanent, $details])) ?: null;
     }
 
-    private function supportsPage(string $resource, string $name, string $type): bool
-    {
-        $page = $resource::getPages()[$name] ?? null;
-
-        return $page !== null && is_subclass_of($page->getPage(), $type);
-    }
-
-    private function reviewKey(ListRecords|EditRecord $page): string
+    private function reviewKey(Page $page): string
     {
         return 'filament-ai-assistant.action-reviews.'.$page->getId();
     }
@@ -340,9 +348,9 @@ final class ActionProposalStore
     }
 
     /** @return array<string, bool|string> */
-    private function actionContext(string $id, bool $bulk): array
+    private function actionContext(string $id, array $proposal): array
     {
-        return ['mountedFromUrl' => true, 'assistantAction' => $id, ...($bulk ? ['table' => true, 'bulk' => true] : [])];
+        return ['mountedFromUrl' => true, 'assistantAction' => $id, ...$this->native->context($proposal['action'], $proposal['ids'][0] ?? null)];
     }
 
     private function invalid(string $key, array $replace = []): never

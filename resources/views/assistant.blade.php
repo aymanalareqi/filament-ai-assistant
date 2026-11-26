@@ -206,8 +206,8 @@
                             <p>{{ __('filament-ai-assistant::assistant.draft_status') }}</p>
                             <h3>
                                 @if ($isAction)
-                                    {{ __('filament-ai-assistant::assistant.actions.'.$draft['operation']) }}
-                                    · {{ __('filament-ai-assistant::assistant.actions.selection', ['count' => count($draft['records']), 'resource' => $draft['label']]) }}
+                                    {{ $draft['action_label'] ?? __('filament-ai-assistant::assistant.actions.'.$draft['operation']) }}
+                                    · {{ $draft['records'] === [] ? $draft['label'] : __('filament-ai-assistant::assistant.actions.selection', ['count' => count($draft['records']), 'resource' => $draft['label']]) }}
                                 @else
                                     {{ __('filament-ai-assistant::assistant.draft_for', ['resource' => $draft['label']]) }}
                                 @endif

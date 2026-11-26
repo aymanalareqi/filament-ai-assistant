@@ -2,12 +2,16 @@
 
 namespace Alareqi\FilamentAiAssistant;
 
+use Filament\Actions\Action;
+use Filament\Actions\Events\ActionCalling;
 use Filament\Resources\Pages\CreateRecord;
 use Filament\Resources\Pages\EditRecord;
 use Filament\Resources\Pages\ListRecords;
+use Filament\Resources\Pages\Page;
 use Filament\Resources\Pages\ViewRecord;
 use Filament\Support\Assets\Css;
 use Filament\Support\Facades\FilamentAsset;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Str;
 use Livewire\Component;
@@ -33,6 +37,8 @@ final class FilamentAiAssistantServiceProvider extends ServiceProvider
             Css::make('chat', __DIR__.'/../resources/css/chat.css'),
         ], 'alareqi/filament-ai-assistant');
 
+        Event::listen(ActionCalling::class, static fn (Action $action) => app(ActionProposalStore::class)->claimConfirmation($action));
+
         // The native resource page has mounted and authorized the record before rendering its form.
         Livewire::listen('render', static function (Component $component): void {
             if (($component instanceof EditRecord || $component instanceof ViewRecord)
@@ -47,7 +53,7 @@ final class FilamentAiAssistantServiceProvider extends ServiceProvider
             }
 
             $actionId = request()->query('assistantAction');
-            if (($component instanceof ListRecords || $component instanceof EditRecord)
+            if ($component instanceof Page
                 && is_string($actionId) && Str::isUuid($actionId)) {
                 app(ActionProposalStore::class)->open($component, $actionId);
 
@@ -65,7 +71,7 @@ final class FilamentAiAssistantServiceProvider extends ServiceProvider
         });
 
         Livewire::listen('call', static function (Component $component, string $method, array $parameters): ?callable {
-            if ($component instanceof ListRecords || $component instanceof EditRecord) {
+            if ($component instanceof Page) {
                 $proposals = app(ActionProposalStore::class);
 
                 if (in_array($method, ['unmountAction', 'unmountTableBulkAction'], true)) {

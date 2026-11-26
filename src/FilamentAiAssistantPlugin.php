@@ -3,6 +3,8 @@
 namespace Alareqi\FilamentAiAssistant;
 
 use Closure;
+use Filament\Actions\Action;
+use Filament\Actions\DeleteBulkAction;
 use Filament\Contracts\Plugin;
 use Filament\Facades\Filament;
 use Filament\Panel;
@@ -26,6 +28,10 @@ final class FilamentAiAssistantPlugin implements Plugin
     private ?Closure $resourceFilter = null;
 
     private ?Closure $fieldFilter = null;
+
+    private bool $discoversActions = false;
+
+    private ?Closure $actionFilter = null;
 
     /** @var array<class-string<resource>, list<string>> */
     private array $resourceActions = [];
@@ -112,7 +118,7 @@ final class FilamentAiAssistantPlugin implements Plugin
 
     /**
      * @param  class-string<resource>  $resource
-     * @param  list<'publish'|'unpublish'|'delete'|'bulk_delete'>  $actions
+     * @param  list<string>  $actions
      * @param  (Closure(): string)|null  $deleteWarning
      */
     public function actionsFor(string $resource, array $actions, ?Closure $deleteWarning = null): self
@@ -129,7 +135,49 @@ final class FilamentAiAssistantPlugin implements Plugin
     /** @return list<string> */
     public function getResourceActions(string $resource): array
     {
-        return array_values(array_intersect(ActionProposalStore::OPERATIONS, $this->resourceActions[$resource] ?? []));
+        return $this->resourceActions[$resource] ?? [];
+    }
+
+    public function discoverActions(bool $enabled = true): self
+    {
+        $this->discoversActions = $enabled;
+
+        return $this;
+    }
+
+    /** @param Closure(Action, class-string<resource>, string): bool $callback */
+    public function allowActionUsing(Closure $callback): self
+    {
+        $this->actionFilter = $callback;
+
+        return $this;
+    }
+
+    public function hasActionDiscovery(string $resource): bool
+    {
+        return $this->discoversActions || $this->getResourceActions($resource) !== [];
+    }
+
+    public function allowsNativeAction(string $resource, string $key, Action $action): bool
+    {
+        if ($this->actionFilter !== null && ! ($this->actionFilter)($action, $resource, $key)) {
+            return false;
+        }
+
+        if (array_key_exists($resource, $this->resourceActions)) {
+            $actions = array_map(app(NativeResourceActions::class)->canonical(...), $this->getResourceActions($resource));
+
+            return in_array($key, $actions, true);
+        }
+
+        return $this->discoversActions && ! $action instanceof DeleteBulkAction;
+    }
+
+    public function deleteWarningFor(string $resource, Closure $warning): self
+    {
+        $this->deleteWarnings[$resource] = $warning;
+
+        return $this;
     }
 
     public function getDeleteWarning(string $resource): ?string

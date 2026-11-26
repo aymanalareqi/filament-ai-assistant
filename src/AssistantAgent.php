@@ -181,11 +181,22 @@ final class AssistantAgent implements Agent, Conversational, HasTools
                 fn (JsonSchema $schema): array => [],
                 fn (): array => ['selection' => $this->selection],
             ),
-            new AssistantTool('prepare_action', 'Prepare an existing Filament action for review only. It does not run the action. For publish, unpublish, or bulk_delete, use the entire confirmed resource table selection and never supply record_id. For delete, use the exact single ID from current_record or search_records. If the target is ambiguous, ask before preparing it.',
+            new AssistantTool('list_actions', 'Find native Filament actions that can be reviewed. Provide the exact record_id to find row, view and edit actions. Bulk actions are listed only when rows are checked in the current resource table.',
                 fn (JsonSchema $schema): array => [
                     'resource' => $schema->string()->required(),
-                    'operation' => $schema->string()->enum(ActionProposalStore::OPERATIONS)->required(),
-                    'record_id' => $schema->string()->description('The exact ID for a single delete only. Omit for bulk actions.'),
+                    'record_id' => $schema->string(),
+                ],
+                function (Request $request) use ($actions): array {
+                    $args = $request->validate(['resource' => 'required|string|max:150', 'record_id' => 'nullable|string|max:100']);
+
+                    return ['actions' => $actions->describeActions($args['resource'], $args['record_id'] ?? null, $this->selection)];
+                },
+            ),
+            new AssistantTool('prepare_action', 'Open an existing Filament action for review only. Use the exact action ID reported by list_actions as operation. Supply the exact record_id only for row, view, or edit actions. Bulk actions use the checked rows from the same resource table. Ask when a record is ambiguous. Action inputs are entered by the admin in Filament.',
+                fn (JsonSchema $schema): array => [
+                    'resource' => $schema->string()->required(),
+                    'operation' => $schema->string()->required(),
+                    'record_id' => $schema->string()->description('The exact ID for a row, view, or edit action only.'),
                 ],
                 function (Request $request) use ($actions): array {
                     if ($this->draft !== null) {
@@ -194,8 +205,8 @@ final class AssistantAgent implements Agent, Conversational, HasTools
 
                     $args = $request->validate([
                         'resource' => 'required|string|max:150',
-                        'operation' => 'required|in:'.implode(',', ActionProposalStore::OPERATIONS),
-                        'record_id' => 'required_if:operation,delete|prohibited_unless:operation,delete|nullable|string|max:100',
+                        'operation' => 'required|string|max:150',
+                        'record_id' => 'nullable|string|max:100',
                     ]);
 
                     if ($this->waitsForRecordChoice($args['resource'], $args['record_id'] ?? null)) {

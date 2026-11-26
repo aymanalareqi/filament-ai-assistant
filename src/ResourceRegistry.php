@@ -42,11 +42,11 @@ final class ResourceRegistry
         return $resources;
     }
 
-    /** @return array<array{id: string, label: string, create: bool, edit: bool, actions: list<string>}> */
+    /** @return array<array{id: string, label: string, create: bool, edit: bool, native_actions: bool}> */
     public function catalog(): array
     {
         $result = [];
-        $actions = app(ActionProposalStore::class);
+        $plugin = FilamentAiAssistantPlugin::current();
 
         foreach ($this->resources() as $id => $resource) {
             $result[] = [
@@ -54,7 +54,7 @@ final class ResourceRegistry
                 'label' => $resource::getPluralModelLabel(),
                 'create' => $this->supports($resource, 'create') && $resource::canCreate(),
                 'edit' => $this->supports($resource, 'edit'),
-                'actions' => $actions->available($resource),
+                'native_actions' => $plugin->hasActionDiscovery($resource),
             ];
         }
 

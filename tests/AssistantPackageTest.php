@@ -12,6 +12,8 @@ use Alareqi\FilamentAiAssistant\FilamentAiAssistantServiceProvider;
 use Alareqi\FilamentAiAssistant\ResourceRegistry;
 use BladeUI\Heroicons\BladeHeroiconsServiceProvider;
 use BladeUI\Icons\BladeIconsServiceProvider;
+use Filament\Actions\Action;
+use Filament\Actions\ActionGroup;
 use Filament\Actions\ActionsServiceProvider;
 use Filament\Actions\BulkAction;
 use Filament\Actions\DeleteAction;
@@ -699,6 +701,59 @@ final class AssistantPackageTest extends TestCase
         $this->assertModelExists($other);
     }
 
+    public function test_native_row_action_opens_its_form_and_can_be_retried_after_native_validation(): void
+    {
+        config(['assistant-test.native-action-fixtures' => true]);
+        FilamentAiAssistantPlugin::current()->actionsFor(EntryResource::class, ['row:rename']);
+        $entry = Entry::query()->create(['name' => 'Original']);
+        AssistantAgent::fake([
+            new ToolCall('list', 'list_actions', ['resource' => 'entries', 'record_id' => (string) $entry->id]),
+            new ToolCall('prepare', 'prepare_action', ['resource' => 'entries', 'operation' => 'row:rename', 'record_id' => (string) $entry->id]),
+            'Action proposed',
+        ])->preventStrayPrompts();
+
+        $draft = Livewire::test(AssistantChat::class)
+            ->set('message', 'Open the Rename entry action')
+            ->call('send')
+            ->assertHasNoErrors()
+            ->assertSee('Rename entry')
+            ->get('draft');
+
+        $review = Livewire::withQueryParams(['assistantAction' => $draft['id']])->test(ListEntries::class)->assertOk();
+        $this->assertSame('rename', $review->instance()->getMountedAction()?->getName());
+        $this->assertSame('Original', $entry->fresh()->name);
+
+        $review->call('callMountedAction')->assertHasErrors(['mountedActions.0.data.name' => 'required']);
+        $this->assertTrue(app(ActionProposalStore::class)->isPending($draft['id']));
+        $review->set('mountedActions.0.data.name', 'Renamed')
+            ->call('callMountedAction')
+            ->assertHasNoErrors();
+
+        $this->assertSame('Renamed', $entry->fresh()->name);
+        $this->assertFalse(app(ActionProposalStore::class)->isPending($draft['id']));
+    }
+
+    public function test_discovery_only_lists_native_actions_that_can_be_reviewed(): void
+    {
+        config(['assistant-test.native-action-fixtures' => true]);
+        FilamentAiAssistantPlugin::current()->actionsFor(EntryResource::class, [
+            'row:rename', 'row:hidden', 'row:denied', 'row:immediate', 'row:link', 'index:notice', 'bulk:publish',
+        ]);
+        $entry = Entry::query()->create(['name' => 'Original']);
+        $store = app(ActionProposalStore::class);
+        $selection = $store->selectionFor('entries', [(string) $entry->id]);
+
+        $actions = collect($store->describeActions('entries', (string) $entry->id, $selection))->keyBy('id');
+
+        $this->assertEqualsCanonicalizing(['row:rename', 'index:notice', 'bulk:publish'], $actions->keys()->all());
+        $this->assertTrue($actions['row:rename']['input']);
+        $this->assertFalse($actions['index:notice']['input']);
+        $this->assertSame('Rename entry', $actions['row:rename']['label']);
+
+        $this->expectException(ValidationException::class);
+        $store->prepare('entries', 'row:immediate', (string) $entry->id);
+    }
+
     public function test_a_checked_row_is_current_record_for_that_message_only(): void
     {
         $entry = Entry::query()->create(['name' => 'Checked row']);
@@ -792,10 +847,10 @@ final class AssistantPackageTest extends TestCase
         $entry = Entry::query()->create(['name' => 'Selected']);
         $store = app(ActionProposalStore::class);
 
-        $this->assertNotContains('bulk_delete', $store->available(EntryResource::class));
+        $selection = $store->selectionFor('entries', [(string) $entry->id]);
+        $this->assertNotContains('bulk:delete', array_column($store->describeActions('entries', null, $selection), 'id'));
 
         FilamentAiAssistantPlugin::current()->actionsFor(EntryResource::class, ['bulk_delete']);
-        $selection = $store->selectionFor('entries', [(string) $entry->id]);
         $proposal = $store->prepare('entries', 'bulk_delete', null, $selection);
         $review = Livewire::withQueryParams(['assistantAction' => $proposal['id']])->test(ListEntries::class);
 
@@ -921,6 +976,20 @@ final class EntryResource extends Resource
                 ->action(fn (Collection $records) => $records->each->update(['published' => $published])))
             ->values()->all();
 
+        if (config('assistant-test.native-action-fixtures')) {
+            $table->recordActions([
+                ActionGroup::make([
+                    Action::make('rename')->label('Rename entry')->authorize('update')
+                        ->schema([TextInput::make('name')->required()])
+                        ->action(fn (Entry $record, array $data): bool => $record->update(['name' => $data['name']])),
+                    Action::make('hidden')->hidden()->requiresConfirmation()->action(fn () => null),
+                    Action::make('denied')->authorize(false)->requiresConfirmation()->action(fn () => null),
+                    Action::make('immediate')->action(fn () => null),
+                    Action::make('link')->url('/elsewhere')->requiresConfirmation()->action(fn () => null),
+                ]),
+            ]);
+        }
+
         return $table->toolbarActions([
             ...$publishActions,
             DeleteBulkAction::make()->authorizeIndividualRecords('delete'),
@@ -957,6 +1026,13 @@ final class ReadOnlyEntryResource extends Resource
 final class ListEntries extends ListRecords
 {
     protected static string $resource = EntryResource::class;
+
+    protected function getHeaderActions(): array
+    {
+        return config('assistant-test.native-action-fixtures')
+            ? [Action::make('notice')->requiresConfirmation()->action(fn () => null)]
+            : [];
+    }
 }
 
 final class CreateEntry extends CreateRecord
