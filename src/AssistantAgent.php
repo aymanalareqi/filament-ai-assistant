@@ -32,7 +32,7 @@ final class AssistantAgent implements Agent, Conversational, HasTools
 
     public function instructions(): string
     {
-        return Config::string('filament-ai-assistant.instructions');
+        return FilamentAiAssistantPlugin::current()?->getInstructions() ?? Config::string('filament-ai-assistant.instructions');
     }
 
     public function messages(): iterable

@@ -14,6 +14,9 @@ use Illuminate\Support\Facades\Gate;
 
 final class FilamentAiAssistantPlugin implements Plugin
 {
+    /** @var string|Closure(): string|null */
+    private string|Closure|null $instructions = null;
+
     private ?Closure $authorizer = null;
 
     private ?Closure $resourceFilter = null;
@@ -54,6 +57,19 @@ final class FilamentAiAssistantPlugin implements Plugin
     }
 
     public function boot(Panel $panel): void {}
+
+    /** @param string|Closure(): string $instructions */
+    public function instructions(string|Closure $instructions): self
+    {
+        $this->instructions = $instructions;
+
+        return $this;
+    }
+
+    public function getInstructions(): ?string
+    {
+        return $this->instructions instanceof Closure ? ($this->instructions)() : $this->instructions;
+    }
 
     /** @param Closure(Authenticatable, Panel): bool $callback */
     public function authorizeUsing(Closure $callback): self

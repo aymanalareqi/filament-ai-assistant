@@ -143,6 +143,41 @@ final class AssistantPackageTest extends TestCase
         $this->assertStringContainsString('A draft is not a saved change.', $instructions);
     }
 
+    public function test_each_panel_can_override_the_assistant_instructions(): void
+    {
+        config(['filament-ai-assistant.instructions' => 'Use the shared instructions.']);
+        $defaultPanel = Filament::getPanel('package-test');
+        $catalogPanel = Panel::make()->id('catalog-test')
+            ->plugin(FilamentAiAssistantPlugin::make()
+                ->authorizeUsing(fn (FixtureUser $user): bool => $user->allowed)
+                ->instructions('Help with the catalog.'));
+        $supportPanel = Panel::make()->id('support-test')
+            ->plugin(FilamentAiAssistantPlugin::make()
+                ->authorizeUsing(fn (FixtureUser $user): bool => $user->allowed)
+                ->instructions(fn (): string => 'Help with customer support.'));
+        $prompts = [];
+        AssistantAgent::fake(function (AgentPrompt $prompt) use (&$prompts): string {
+            $prompts[] = $prompt->agent->instructions();
+
+            return 'Ready.';
+        })->preventStrayPrompts();
+
+        foreach ([$catalogPanel, $supportPanel, $defaultPanel] as $panel) {
+            Filament::setCurrentPanel($panel);
+
+            Livewire::test(AssistantChat::class)
+                ->set('message', 'What can you do?')
+                ->call('send')
+                ->assertHasNoErrors();
+        }
+
+        $this->assertSame([
+            'Help with the catalog.',
+            'Help with customer support.',
+            'Use the shared instructions.',
+        ], $prompts);
+    }
+
     public function test_chat_prepares_a_draft_and_the_unmodified_native_page_validates_and_saves_it(): void
     {
         $entry = Entry::query()->create(['name' => 'Before', 'secret_code' => 'do-not-expose']);
