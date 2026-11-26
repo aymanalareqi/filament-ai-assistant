@@ -218,6 +218,29 @@ final class AssistantPackageTest extends TestCase
         AssistantAgent::assertNeverPrompted();
     }
 
+    public function test_chat_rejects_a_list_token_when_the_resource_is_no_longer_allowed_or_the_admin_changes(): void
+    {
+        $token = app(CurrentRecordContext::class)->issueList(EntryResource::class)['token'];
+        $originalAdmin = Filament::auth()->user();
+        AssistantAgent::fake()->preventStrayPrompts();
+
+        $this->actingAs(FixtureUser::query()->create(['allowed' => true]));
+        Livewire::test(AssistantChat::class)
+            ->set('message', 'Find an entry')
+            ->call('send', null, $token)
+            ->assertHasErrors('message');
+
+        $this->actingAs($originalAdmin);
+        FilamentAiAssistantPlugin::current()->allowResourceUsing(fn (string $resource): bool => $resource !== EntryResource::class);
+        Livewire::test(AssistantChat::class)
+            ->set('message', 'Find an entry')
+            ->call('send', null, $token)
+            ->assertSee('This list is no longer available.')
+            ->assertHasErrors('message');
+
+        AssistantAgent::assertNeverPrompted();
+    }
+
     public function test_a_panel_can_replace_the_default_quick_prompts_without_sending_a_message(): void
     {
         FilamentAiAssistantPlugin::current()->quickPrompts(fn (): array => [

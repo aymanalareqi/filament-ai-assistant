@@ -39,6 +39,10 @@ final class FilamentAiAssistantServiceProvider extends ServiceProvider
                 && request()->isMethod('GET') && request()->routeIs($component::getRouteName())) {
                 request()->attributes->set('filament-ai-assistant.current-record',
                     app(CurrentRecordContext::class)->issue($component::getResource(), $component->getRecord()));
+            } elseif ($component instanceof ListRecords
+                && request()->isMethod('GET') && request()->routeIs($component::getRouteName())) {
+                request()->attributes->set('filament-ai-assistant.current-list',
+                    app(CurrentRecordContext::class)->issueList($component::getResource()));
             }
 
             $actionId = request()->query('assistantAction');

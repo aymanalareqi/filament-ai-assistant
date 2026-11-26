@@ -82,7 +82,7 @@ final class AssistantChat extends Component
         $this->selection = null;
     }
 
-    public function send(ResourceRegistry $resources, DraftStore $drafts, CurrentRecordContext $context, ?string $recordContextToken = null): void
+    public function send(ResourceRegistry $resources, DraftStore $drafts, CurrentRecordContext $context, ?string $recordContextToken = null, ?string $listContextToken = null): void
     {
         $this->authorizeConversation();
         $this->resetErrorBag('message');
@@ -107,7 +107,14 @@ final class AssistantChat extends Component
             return;
         }
 
-        $this->answer($resources, $drafts, $this->message, $currentRecord);
+        $currentList = $listContextToken === null ? null : $context->resolveList($listContextToken);
+        if ($listContextToken !== null && $currentList === null) {
+            $this->addError('message', __('filament-ai-assistant::assistant.errors.current_list_unavailable'));
+
+            return;
+        }
+
+        $this->answer($resources, $drafts, $this->message, $currentRecord, currentList: $currentList);
     }
 
     public function chooseRecord(ResourceRegistry $resources, DraftStore $drafts, CurrentRecordContext $context, string $choiceId, string $recordId): void
@@ -149,8 +156,11 @@ final class AssistantChat extends Component
         $this->dispatch('filament-ai-assistant-response');
     }
 
-    /** @param array{resource: string, record_id: string, resource_label: string, record_label: string, can_edit: bool}|null $currentRecord */
-    private function answer(ResourceRegistry $resources, DraftStore $drafts, string $originalMessage, ?array $currentRecord, bool $recordExplicitlyChosen = false): void
+    /**
+     * @param  array{resource: string, record_id: string, resource_label: string, record_label: string, can_edit: bool}|null  $currentRecord
+     * @param  array{resource: string, label: string}|null  $currentList
+     */
+    private function answer(ResourceRegistry $resources, DraftStore $drafts, string $originalMessage, ?array $currentRecord, bool $recordExplicitlyChosen = false, ?array $currentList = null): void
     {
         $key = 'filament-ai-assistant:'.Filament::getCurrentPanel()->getId().':'.Filament::auth()->id();
 
@@ -162,7 +172,7 @@ final class AssistantChat extends Component
 
         RateLimiter::hit($key);
         $agentHistory = $recordExplicitlyChosen ? array_slice($this->history, 0, -2) : $this->history;
-        $agent = new AssistantAgent($resources, $drafts, array_slice($agentHistory, -10), $currentRecord, $recordExplicitlyChosen);
+        $agent = new AssistantAgent($resources, $drafts, array_slice($agentHistory, -10), $currentRecord, $recordExplicitlyChosen, $currentList);
 
         try {
             $response = $agent->prompt(

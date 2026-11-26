@@ -5,15 +5,18 @@
         open: false,
         sending: false,
         recordContext: null,
+        listContext: null,
         includeRecord: true,
-        syncRecordContext() {
+        syncPageContext() {
+            const list = document.querySelector('[data-fia-list-context]')?.dataset;
+            this.listContext = list?.token ? { token: list.token, label: list.resourceLabel } : null;
             const next = document.querySelector('[data-fia-record-context]')?.dataset;
             if ((this.recordContext?.token ?? null) === (next?.token ?? null)) return;
             this.recordContext = next?.token ? { token: next.token, label: next.recordLabel, resource: next.resourceLabel } : null;
             this.includeRecord = true;
         },
         showChat() {
-            this.syncRecordContext();
+            this.syncPageContext();
             this.open = true;
             this.$nextTick(() => {
                 this.scrollToLatest();
@@ -33,18 +36,18 @@
         },
         async submitMessage() {
             if (this.sending) return;
-            this.syncRecordContext();
+            this.syncPageContext();
             this.sending = true;
             this.$nextTick(() => this.scrollToLatest());
             try {
-                await this.$wire.send(this.includeRecord ? (this.recordContext?.token ?? null) : null);
+                await this.$wire.send(this.includeRecord ? (this.recordContext?.token ?? null) : null, this.listContext?.token ?? null);
             } finally {
                 this.sending = false;
             }
         },
     }"
-    x-init="syncRecordContext()"
-    x-on:livewire:navigated.document="syncRecordContext()"
+    x-init="syncPageContext()"
+    x-on:livewire:navigated.document="syncPageContext()"
     x-on:keydown.escape.stop="if (open) closeChat()"
     x-on:filament-ai-assistant-response.window="$nextTick(() => scrollToLatest())"
     x-on:filament-ai-assistant-selection.window="showChat(); $wire.refreshSelection()"
@@ -97,6 +100,14 @@
             </div>
             <button type="button" class="fia-record-toggle" x-on:click="includeRecord = !includeRecord"
                 x-text="includeRecord ? @js(__('filament-ai-assistant::assistant.detach_record')) : @js(__('filament-ai-assistant::assistant.attach_record'))"></button>
+        </div>
+
+        <div class="fia-record-context" x-show="listContext" x-cloak>
+            <x-filament::icon icon="heroicon-o-list-bullet" class="fia-icon" aria-hidden="true" />
+            <div class="fia-record-details" aria-live="polite">
+                <small>{{ __('filament-ai-assistant::assistant.current_list') }}</small>
+                <span x-text="listContext?.label ?? ''" dir="auto"></span>
+            </div>
         </div>
 
         @if ($selection)

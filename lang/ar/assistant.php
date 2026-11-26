@@ -21,6 +21,7 @@ return [
     ],
     'you' => 'أنت',
     'current_record' => 'السجل الحالي',
+    'current_list' => 'القائمة الحالية',
     'record_not_attached' => 'غير مرفق برسالتك',
     'detach_record' => 'إلغاء الإرفاق',
     'attach_record' => 'إرفاق',
@@ -55,6 +56,7 @@ return [
         'incomplete' => 'اكتمل تنفيذ الإجراء على :success من أصل :total من السجلات.',
     ],
     'errors' => [
+        'current_list_unavailable' => 'هذه القائمة لم تعد متاحة. حدّث الصفحة أو افتح قائمة أخرى.',
         'choice_pending' => 'اختر سجلًا أو ألغِ الاختيار قبل إرسال رسالة أخرى.',
         'choose_listed_record' => 'هذا الخيار غير متاح. اختر أحد السجلات المعروضة.',
         'choice_unavailable' => 'هذا السجل لم يعد متاحًا. اختر سجلًا آخر أو ألغِ الاختيار وابحث من جديد.',

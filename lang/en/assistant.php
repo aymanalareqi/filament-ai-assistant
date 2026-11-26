@@ -13,6 +13,7 @@ return [
     ],
     'you' => 'You',
     'current_record' => 'Current record',
+    'current_list' => 'Current list',
     'record_not_attached' => 'Not attached to your message',
     'detach_record' => 'Detach',
     'attach_record' => 'Attach',
@@ -55,6 +56,7 @@ return [
         'incomplete' => 'Action completed for :success of :total records.',
     ],
     'errors' => [
+        'current_list_unavailable' => 'This list is no longer available. Refresh the page or open another list.',
         'choice_pending' => 'Choose a record or cancel the selection before sending another message.',
         'choose_listed_record' => 'This option is not available. Choose one of the records shown.',
         'choice_unavailable' => 'This record is no longer available. Choose another record or cancel and search again.',

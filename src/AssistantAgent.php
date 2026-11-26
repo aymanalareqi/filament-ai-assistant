@@ -33,6 +33,7 @@ final class AssistantAgent implements Agent, Conversational, HasTools
     /**
      * @param  list<array{role: string, text: string}>  $history
      * @param  array{resource: string, record_id: string, resource_label: string, record_label: string, can_edit: bool}|null  $currentRecord
+     * @param  array{resource: string, label: string}|null  $currentList
      */
     public function __construct(
         private ResourceRegistry $resources,
@@ -40,6 +41,7 @@ final class AssistantAgent implements Agent, Conversational, HasTools
         private array $history = [],
         private ?array $currentRecord = null,
         private bool $recordExplicitlyChosen = false,
+        private ?array $currentList = null,
     ) {}
 
     public function instructions(): string
@@ -48,6 +50,10 @@ final class AssistantAgent implements Agent, Conversational, HasTools
 
         if ($this->recordExplicitlyChosen) {
             return $instructions."\n\nThe user already chose the exact record for this request. Call current_record for that selection, then continue the original request. Do not ask them to choose again or prepare a change for any other record.";
+        }
+
+        if ($this->currentList !== null) {
+            return $instructions."\n\nThe admin is on the {$this->currentList['label']} list (resource: {$this->currentList['resource']}). A standalone name, code, ID, or request that does not name a resource refers to this list. Omit resource from search_records to search the current list. Use the exact spelling from the user's message. The current list takes precedence over resource assumptions in chat history, including previous assistant replies. Search another resource only when the user explicitly identifies it. If the list search has no matches, report that for this list instead of switching resources.";
         }
 
         if ($this->currentRecord === null) {
@@ -91,18 +97,24 @@ final class AssistantAgent implements Agent, Conversational, HasTools
                 fn (JsonSchema $schema): array => [],
                 fn (Request $request): array => $this->resources->catalog(),
             ),
-            new AssistantTool('search_records', 'Find records by name, title, code, or ID using the resources available to this admin.',
+            new AssistantTool('search_records', $this->currentList === null
+                ? 'Find records by name, title, code, or ID using the resources available to this admin.'
+                : 'Find records by name, title, code, or ID. Leave resource unset to search the current list. Set resource only if the user explicitly identifies a different resource.',
                 fn (JsonSchema $schema): array => [
-                    'resource' => $schema->string()->required(),
+                    'resource' => $this->currentList === null ? $schema->string()->required() : $schema->string(),
                     'query' => $schema->string()->required(),
                 ],
                 function (Request $request): array {
-                    $args = $request->validate(['resource' => 'required|string|max:150', 'query' => 'required|string|max:100']);
+                    $args = $request->validate([
+                        'resource' => $this->currentList === null ? 'required|string|max:150' : 'sometimes|string|max:150',
+                        'query' => 'required|string|max:100',
+                    ]);
+                    $resource = $args['resource'] ?? $this->currentList['resource'];
 
-                    $records = $this->resources->search($args['resource'], $args['query']);
-                    $this->searchMatches[$args['resource']] = $records;
+                    $records = $this->resources->search($resource, $args['query']);
+                    $this->searchMatches[$resource] = $records;
 
-                    return ['records' => $records];
+                    return ['resource' => $resource, 'records' => $records];
                 },
             ),
             new AssistantTool('ask_record_choice', 'For an ambiguous single-record target, ask the admin to choose from multiple authorized matches from the latest search_records call for this resource. Use this before preparing a change and stop when waiting_for_user is true. Do not call it for a search-only list unless the user must pick a target.',
