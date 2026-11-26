@@ -5,7 +5,6 @@ namespace Alareqi\FilamentAiAssistant\Tests;
 use Alareqi\FilamentAiAssistant\ActionProposalStore;
 use Alareqi\FilamentAiAssistant\AssistantAgent;
 use Alareqi\FilamentAiAssistant\AssistantChat;
-use Alareqi\FilamentAiAssistant\AssistantSelectionAction;
 use Alareqi\FilamentAiAssistant\CurrentRecordContext;
 use Alareqi\FilamentAiAssistant\DraftStore;
 use Alareqi\FilamentAiAssistant\FilamentAiAssistantPlugin;
@@ -649,13 +648,9 @@ final class AssistantPackageTest extends TestCase
         $one = Entry::query()->create(['name' => 'First item']);
         $two = Entry::query()->create(['name' => 'Second item']);
         $other = Entry::query()->create(['name' => 'Not selected']);
+        $token = app(CurrentRecordContext::class)->issueList(EntryResource::class)['token'];
 
         foreach (['publish' => true, 'unpublish' => false] as $operation => $published) {
-            Livewire::withQueryParams([])->test(ListEntries::class)
-                ->assertOk()
-                ->callTableBulkAction('sendSelectionToAssistant', [(string) $one->id, (string) $two->id])
-                ->assertDispatched('filament-ai-assistant-selection');
-
             AssistantAgent::fake([
                 new ToolCall('prepare', 'prepare_action', ['resource' => 'entries', 'operation' => $operation]),
                 'Action proposed',
@@ -663,7 +658,7 @@ final class AssistantPackageTest extends TestCase
 
             $proposal = Livewire::withQueryParams([])->test(AssistantChat::class)
                 ->set('message', 'Please '.$operation.' the selected entries')
-                ->call('send')
+                ->call('send', null, $token, [(string) $one->id, (string) $two->id])
                 ->assertHasNoErrors()
                 ->assertSee('Review action')
                 ->assertSee('First item')
@@ -704,12 +699,82 @@ final class AssistantPackageTest extends TestCase
         $this->assertModelExists($other);
     }
 
+    public function test_a_checked_row_is_current_record_for_that_message_only(): void
+    {
+        $entry = Entry::query()->create(['name' => 'Checked row']);
+        $token = app(CurrentRecordContext::class)->issueList(EntryResource::class)['token'];
+        AssistantAgent::fake(['Found.', 'Not selected.'])->preventStrayPrompts();
+
+        $chat = Livewire::test(AssistantChat::class)
+            ->set('message', 'Which record is checked?')
+            ->call('send', null, $token, [(string) $entry->id])
+            ->assertHasNoErrors()
+            ->set('message', 'Is there still a selection?')
+            ->call('send', null, $token, [])
+            ->assertHasNoErrors();
+
+        AssistantAgent::assertPrompted(function (AgentPrompt $prompt) use ($entry): bool {
+            if (! $prompt->contains('Which record')) {
+                return false;
+            }
+
+            $tool = collect($prompt->agent->tools())->first(fn ($tool): bool => $tool->name() === 'current_record');
+
+            return $tool !== null && json_decode($tool->handle(new ToolRequest), true)['record']['record_id'] === (string) $entry->id;
+        });
+        AssistantAgent::assertPrompted(fn (AgentPrompt $prompt): bool => $prompt->contains('still a selection')
+            && ! collect($prompt->agent->tools())->contains(fn ($tool): bool => $tool->name() === 'current_record'));
+        $chat->assertSet('draft', null);
+    }
+
+    public function test_the_assistant_cannot_guess_one_of_several_checked_rows(): void
+    {
+        $first = Entry::query()->create(['name' => 'Blue entry']);
+        $second = Entry::query()->create(['name' => 'Green entry']);
+        $token = app(CurrentRecordContext::class)->issueList(EntryResource::class)['token'];
+        AssistantAgent::fake([
+            new ToolCall('prepare', 'prepare_change', [
+                'resource' => 'entries',
+                'operation' => 'edit',
+                'record_id' => (string) $first->id,
+                'changes' => [['field' => 'name', 'value' => 'New name']],
+            ]),
+            'Draft prepared',
+        ])->preventStrayPrompts();
+
+        Livewire::test(AssistantChat::class)
+            ->set('message', 'Rename this entry')
+            ->call('send', null, $token, [(string) $first->id, (string) $second->id])
+            ->assertHasNoErrors()
+            ->assertSee('Choose the correct record')
+            ->assertSee('Blue entry')
+            ->assertSee('Green entry')
+            ->assertSet('draft', null);
+    }
+
+    public function test_chat_rejects_select_all_and_nonexistent_checked_ids_before_prompting(): void
+    {
+        $token = app(CurrentRecordContext::class)->issueList(EntryResource::class)['token'];
+        AssistantAgent::fake()->preventStrayPrompts();
+
+        Livewire::test(AssistantChat::class)
+            ->set('message', 'Publish the checked rows')
+            ->call('send', null, $token, [], true)
+            ->assertSee('Selecting all matching records is not supported.')
+            ->call('send', null, $token, ['9999'])
+            ->assertHasErrors('message')
+            ->assertSet('draft', null);
+
+        AssistantAgent::assertNeverPrompted();
+    }
+
     public function test_assistant_rejects_changed_records_and_tampered_bulk_selections(): void
     {
         $entry = Entry::query()->create(['name' => 'Selected']);
         $other = Entry::query()->create(['name' => 'Other']);
-        Livewire::test(ListEntries::class)->callTableBulkAction('sendSelectionToAssistant', [(string) $entry->id]);
-        $proposal = app(ActionProposalStore::class)->prepare('entries', 'publish', null);
+        $store = app(ActionProposalStore::class);
+        $selection = $store->selectionFor('entries', [(string) $entry->id]);
+        $proposal = $store->prepare('entries', 'publish', null, $selection);
 
         Livewire::withQueryParams(['assistantAction' => $proposal['id']])
             ->test(ListEntries::class)->set('selectedTableRecords', [(string) $other->id])
@@ -725,13 +790,13 @@ final class AssistantPackageTest extends TestCase
     public function test_bulk_delete_is_off_until_the_panel_explicitly_enables_it(): void
     {
         $entry = Entry::query()->create(['name' => 'Selected']);
-        Livewire::test(ListEntries::class)->callTableBulkAction('sendSelectionToAssistant', [(string) $entry->id]);
         $store = app(ActionProposalStore::class);
 
         $this->assertNotContains('bulk_delete', $store->available(EntryResource::class));
 
         FilamentAiAssistantPlugin::current()->actionsFor(EntryResource::class, ['bulk_delete']);
-        $proposal = $store->prepare('entries', 'bulk_delete', null);
+        $selection = $store->selectionFor('entries', [(string) $entry->id]);
+        $proposal = $store->prepare('entries', 'bulk_delete', null, $selection);
         $review = Livewire::withQueryParams(['assistantAction' => $proposal['id']])->test(ListEntries::class);
 
         $this->assertModelExists($entry);
@@ -747,7 +812,7 @@ final class AssistantPackageTest extends TestCase
             $store->prepare('entries', 'publish', null);
             $this->fail('A bulk proposal was prepared without a selection.');
         } catch (ValidationException $exception) {
-            $this->assertStringContainsString('Select the rows', $exception->getMessage());
+            $this->assertStringContainsString('Check the specific rows', $exception->getMessage());
         }
         $proposal = $store->prepare('entries', 'delete', (string) $entry->id);
 
@@ -858,7 +923,6 @@ final class EntryResource extends Resource
 
         return $table->toolbarActions([
             ...$publishActions,
-            AssistantSelectionAction::make(),
             DeleteBulkAction::make()->authorizeIndividualRecords('delete'),
         ]);
     }

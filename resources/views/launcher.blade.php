@@ -9,7 +9,7 @@
 
 @if ($listContext = request()->attributes->get('filament-ai-assistant.current-list'))
     <span hidden data-fia-list-context data-token="{{ $listContext['token'] }}"
-        data-resource-label="{{ $listContext['label'] }}"></span>
+        data-resource-label="{{ $listContext['label'] }}" data-component="{{ $listContext['component'] }}"></span>
 @endif
 
 @if ($actionComponent = request()->attributes->get('filament-ai-assistant.action-component'))

@@ -34,6 +34,7 @@ final class AssistantAgent implements Agent, Conversational, HasTools
      * @param  list<array{role: string, text: string}>  $history
      * @param  array{resource: string, record_id: string, resource_label: string, record_label: string, can_edit: bool}|null  $currentRecord
      * @param  array{resource: string, label: string}|null  $currentList
+     * @param  array{resource: string, label: string, records: list<array{id: string, label: string}>}|null  $selection
      */
     public function __construct(
         private ResourceRegistry $resources,
@@ -42,6 +43,7 @@ final class AssistantAgent implements Agent, Conversational, HasTools
         private ?array $currentRecord = null,
         private bool $recordExplicitlyChosen = false,
         private ?array $currentList = null,
+        private ?array $selection = null,
     ) {}
 
     public function instructions(): string
@@ -53,10 +55,14 @@ final class AssistantAgent implements Agent, Conversational, HasTools
         }
 
         if ($this->currentList !== null) {
-            return $instructions."\n\nThe admin is on the {$this->currentList['label']} list (resource: {$this->currentList['resource']}). A standalone name, code, ID, or request that does not name a resource refers to this list. Omit resource from search_records to search the current list. Use the exact spelling from the user's message. The current list takes precedence over resource assumptions in chat history, including previous assistant replies. Search another resource only when the user explicitly identifies it. If the list search has no matches, report that for this list instead of switching resources.";
+            $instructions .= "\n\nThe admin is on the {$this->currentList['label']} list (resource: {$this->currentList['resource']}). A standalone name, code, ID, or request that does not name a resource refers to this list. Omit resource from search_records to search the current list. Use the exact spelling from the user's message. The current list takes precedence over resource assumptions in chat history, including previous assistant replies. Search another resource only when the user explicitly identifies it. If the list search has no matches, report that for this list instead of switching resources.";
         }
 
-        if ($this->currentRecord === null) {
+        if ($this->selection !== null) {
+            $instructions .= "\n\nThe table has checked rows for this message. Use table_selection when the user refers to checked or selected rows, and current_record if exactly one checked row identifies what the user means by “this record”. If the request targets one of several checked rows and the exact row is unclear, call ask_record_choice for their resource. Do not assume a checked row overrides a different target explicitly named by the user.";
+        }
+
+        if ($this->currentRecord === null || $this->selection !== null) {
             return $instructions;
         }
 
@@ -117,7 +123,7 @@ final class AssistantAgent implements Agent, Conversational, HasTools
                     return ['resource' => $resource, 'records' => $records];
                 },
             ),
-            new AssistantTool('ask_record_choice', 'For an ambiguous single-record target, ask the admin to choose from multiple authorized matches from the latest search_records call for this resource. Use this before preparing a change and stop when waiting_for_user is true. Do not call it for a search-only list unless the user must pick a target.',
+            new AssistantTool('ask_record_choice', 'For an ambiguous single-record target, ask the admin to choose from the latest search matches or the currently checked rows for this resource. Use this before preparing a change and stop when waiting_for_user is true. Do not call it for a search-only list unless the user must pick a target.',
                 fn (JsonSchema $schema): array => ['resource' => $schema->string()->required()],
                 function (Request $request): array {
                     $args = $request->validate(['resource' => 'required|string|max:150']);
@@ -171,9 +177,9 @@ final class AssistantAgent implements Agent, Conversational, HasTools
                     return ['prepared' => true, 'fields' => array_column($this->draft['fields'], 'label')];
                 },
             ),
-            new AssistantTool('table_selection', 'Get the records explicitly sent to the assistant from a resource table. Ask the admin to select rows and choose Use selection in assistant if there is no selection.',
+            new AssistantTool('table_selection', 'Get the rows checked in the current resource table when this message was sent. Ask the admin to check specific rows if there is no selection.',
                 fn (JsonSchema $schema): array => [],
-                fn (): array => ['selection' => $actions->selection()],
+                fn (): array => ['selection' => $this->selection],
             ),
             new AssistantTool('prepare_action', 'Prepare an existing Filament action for review only. It does not run the action. For publish, unpublish, or bulk_delete, use the entire confirmed resource table selection and never supply record_id. For delete, use the exact single ID from current_record or search_records. If the target is ambiguous, ask before preparing it.',
                 fn (JsonSchema $schema): array => [
@@ -196,7 +202,7 @@ final class AssistantAgent implements Agent, Conversational, HasTools
                         return ['waiting_for_user' => true];
                     }
 
-                    $this->draft = $actions->prepare($args['resource'], $args['operation'], $args['record_id'] ?? null);
+                    $this->draft = $actions->prepare($args['resource'], $args['operation'], $args['record_id'] ?? null, $this->selection);
 
                     return ['prepared' => true, 'records' => count($this->draft['records'])];
                 },
@@ -206,7 +212,8 @@ final class AssistantAgent implements Agent, Conversational, HasTools
 
     private function offerRecordChoice(string $resource): bool
     {
-        $matches = $this->searchMatches[$resource] ?? [];
+        $matches = $this->searchMatches[$resource]
+            ?? ($resource === ($this->selection['resource'] ?? null) ? $this->selection['records'] : []);
 
         if (count($matches) < 2) {
             return false;

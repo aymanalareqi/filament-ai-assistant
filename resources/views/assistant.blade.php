@@ -9,11 +9,19 @@
         includeRecord: true,
         syncPageContext() {
             const list = document.querySelector('[data-fia-list-context]')?.dataset;
-            this.listContext = list?.token ? { token: list.token, label: list.resourceLabel } : null;
+            this.listContext = list?.token ? { token: list.token, label: list.resourceLabel, component: list.component } : null;
             const next = document.querySelector('[data-fia-record-context]')?.dataset;
             if ((this.recordContext?.token ?? null) === (next?.token ?? null)) return;
             this.recordContext = next?.token ? { token: next.token, label: next.recordLabel, resource: next.resourceLabel } : null;
             this.includeRecord = true;
+        },
+        activeTable() {
+            const root = this.listContext ? Livewire.find(this.listContext.component)?.$el : null;
+            const table = root?.querySelector('.fi-ta');
+            return table ? Alpine.$data(table) : null;
+        },
+        selectedCount() {
+            return this.activeTable()?.getSelectedRecordsCount?.() ?? 0;
         },
         showChat() {
             this.syncPageContext();
@@ -40,7 +48,10 @@
             this.sending = true;
             this.$nextTick(() => this.scrollToLatest());
             try {
-                await this.$wire.send(this.includeRecord ? (this.recordContext?.token ?? null) : null, this.listContext?.token ?? null);
+                const table = this.activeTable();
+                const all = table?.isTrackingDeselectedRecords === true;
+                const ids = table?.selectedRecords && !all ? Array.from(table.selectedRecords, String) : [];
+                await this.$wire.send(this.includeRecord ? (this.recordContext?.token ?? null) : null, this.listContext?.token ?? null, ids, all);
             } finally {
                 this.sending = false;
             }
@@ -50,7 +61,6 @@
     x-on:livewire:navigated.document="syncPageContext()"
     x-on:keydown.escape.stop="if (open) closeChat()"
     x-on:filament-ai-assistant-response.window="$nextTick(() => scrollToLatest())"
-    x-on:filament-ai-assistant-selection.window="showChat(); $wire.refreshSelection()"
 >
     <section
         id="fia-chat-{{ $this->getId() }}"
@@ -110,16 +120,10 @@
             </div>
         </div>
 
-        @if ($selection)
-            <div class="fia-selection">
-                <x-filament::icon icon="heroicon-o-check-circle" class="fia-icon" aria-hidden="true" />
-                <span>{{ __('filament-ai-assistant::assistant.actions.selection', ['count' => count($selection['records']), 'resource' => $selection['label']]) }}</span>
-                <button type="button" class="fia-tool" wire:click="clearSelection" wire:loading.attr="disabled"
-                    title="{{ __('filament-ai-assistant::assistant.actions.clear_selection') }}" aria-label="{{ __('filament-ai-assistant::assistant.actions.clear_selection') }}">
-                    <x-filament::icon icon="heroicon-m-x-mark" class="fia-icon" aria-hidden="true" />
-                </button>
-            </div>
-        @endif
+        <div class="fia-selection" x-show="selectedCount() > 0" x-cloak aria-live="polite">
+            <x-filament::icon icon="heroicon-o-check-circle" class="fia-icon" aria-hidden="true" />
+            <span x-text="@js(__('filament-ai-assistant::assistant.actions.selected_rows')).replace(':count', selectedCount())"></span>
+        </div>
 
         <div class="fia-thread" x-ref="thread">
             @if (count($history))

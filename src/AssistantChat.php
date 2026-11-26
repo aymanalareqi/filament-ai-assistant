@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\HtmlString;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Livewire\Attributes\Locked;
 use Livewire\Component;
 use Throwable;
@@ -26,10 +27,6 @@ final class AssistantChat extends Component
     /** @var array<string, mixed>|null */
     #[Locked]
     public ?array $draft = null;
-
-    /** @var array<string, mixed>|null */
-    #[Locked]
-    public ?array $selection = null;
 
     /** @var array{id: string, resource: string, candidates: list<array{id: string, label: string}>}|null */
     #[Locked]
@@ -69,21 +66,16 @@ final class AssistantChat extends Component
         $this->restoreConversation($drafts);
     }
 
-    public function refreshSelection(ActionProposalStore $actions): void
-    {
-        $this->authorizeConversation();
-        $this->selection = $actions->selection();
-    }
-
-    public function clearSelection(ActionProposalStore $actions): void
-    {
-        $this->authorizeConversation();
-        $actions->clearSelection();
-        $this->selection = null;
-    }
-
-    public function send(ResourceRegistry $resources, DraftStore $drafts, CurrentRecordContext $context, ?string $recordContextToken = null, ?string $listContextToken = null): void
-    {
+    public function send(
+        ResourceRegistry $resources,
+        DraftStore $drafts,
+        CurrentRecordContext $context,
+        ActionProposalStore $actions,
+        ?string $recordContextToken = null,
+        ?string $listContextToken = null,
+        array $selectedRecordIds = [],
+        bool $allRowsSelected = false,
+    ): void {
         $this->authorizeConversation();
         $this->resetErrorBag('message');
 
@@ -114,7 +106,33 @@ final class AssistantChat extends Component
             return;
         }
 
-        $this->answer($resources, $drafts, $this->message, $currentRecord, currentList: $currentList);
+        $selection = null;
+        if ($allRowsSelected || $selectedRecordIds !== []) {
+            try {
+                if ($allRowsSelected || count($selectedRecordIds) > ActionProposalStore::MAX_RECORDS) {
+                    throw ValidationException::withMessages(['message' => __('filament-ai-assistant::assistant.errors.selection_size', ['max' => ActionProposalStore::MAX_RECORDS])]);
+                }
+
+                if ($currentList === null || validator(['ids' => $selectedRecordIds], [
+                    'ids' => 'list',
+                    'ids.*' => 'required|string|max:100|distinct:strict',
+                ])->fails()) {
+                    throw ValidationException::withMessages(['message' => __('filament-ai-assistant::assistant.errors.selection_required')]);
+                }
+
+                $selection = $actions->selectionFor($currentList['resource'], $selectedRecordIds);
+            } catch (ValidationException $exception) {
+                $this->addError('message', $exception->getMessage());
+
+                return;
+            }
+
+            if (count($selectedRecordIds) === 1 && $currentRecord === null) {
+                $currentRecord = $context->forRecord($currentList['resource'], $selectedRecordIds[0]);
+            }
+        }
+
+        $this->answer($resources, $drafts, $this->message, $currentRecord, currentList: $currentList, selection: $selection);
     }
 
     public function chooseRecord(ResourceRegistry $resources, DraftStore $drafts, CurrentRecordContext $context, string $choiceId, string $recordId): void
@@ -159,8 +177,9 @@ final class AssistantChat extends Component
     /**
      * @param  array{resource: string, record_id: string, resource_label: string, record_label: string, can_edit: bool}|null  $currentRecord
      * @param  array{resource: string, label: string}|null  $currentList
+     * @param  array{resource: string, label: string, records: list<array{id: string, label: string}>}|null  $selection
      */
-    private function answer(ResourceRegistry $resources, DraftStore $drafts, string $originalMessage, ?array $currentRecord, bool $recordExplicitlyChosen = false, ?array $currentList = null): void
+    private function answer(ResourceRegistry $resources, DraftStore $drafts, string $originalMessage, ?array $currentRecord, bool $recordExplicitlyChosen = false, ?array $currentList = null, ?array $selection = null): void
     {
         $key = 'filament-ai-assistant:'.Filament::getCurrentPanel()->getId().':'.Filament::auth()->id();
 
@@ -172,7 +191,7 @@ final class AssistantChat extends Component
 
         RateLimiter::hit($key);
         $agentHistory = $recordExplicitlyChosen ? array_slice($this->history, 0, -2) : $this->history;
-        $agent = new AssistantAgent($resources, $drafts, array_slice($agentHistory, -10), $currentRecord, $recordExplicitlyChosen, $currentList);
+        $agent = new AssistantAgent($resources, $drafts, array_slice($agentHistory, -10), $currentRecord, $recordExplicitlyChosen, $currentList, $selection);
 
         try {
             $response = $agent->prompt(
@@ -270,7 +289,6 @@ final class AssistantChat extends Component
         $actions = app(ActionProposalStore::class);
         $store = ($draft['kind'] ?? null) === 'action' ? $actions : $drafts;
         $this->draft = $draft !== null && $store->isPending($draft['id']) ? $draft : null;
-        $this->selection = $actions->selection();
     }
 
     private function conversationKey(): string

@@ -41,77 +41,33 @@ final class ActionProposalStore
     }
 
     /**
-     * Capture an explicit selection from the native table, not from model arguments.
-     *
+     * @param  list<string>  $ids
      * @return array{resource: string, label: string, records: list<array{id: string, label: string}>}
      */
-    public function captureSelection(ListRecords $page): array
+    public function selectionFor(string $slug, array $ids): array
     {
-        $resource = $page::getResource();
-        $operations = array_diff($this->available($resource), ['delete']);
-        abort_if($operations === [], 403);
-
-        if ($page->isTrackingDeselectedTableRecords || count($page->selectedTableRecords) > self::MAX_RECORDS) {
+        if ($ids === [] || count($ids) > self::MAX_RECORDS) {
             $this->invalid('selection_size', ['max' => self::MAX_RECORDS]);
         }
 
-        $records = $page->getSelectedTableRecords()->collect()->values();
-        if ($records->isEmpty() || $records->count() !== count($page->selectedTableRecords)
-            || ! $records->every(fn (mixed $record): bool => $record instanceof Model && $this->canSee($resource, $record))) {
+        $resource = $this->resources->resource($slug);
+        $records = $this->records($resource, $ids);
+        if (! $records->every(fn (Model $record): bool => $this->canSee($resource, $record))) {
             $this->invalid('selection_required');
         }
 
-        $selection = [
-            'resource' => $resource::getSlug(Filament::getCurrentPanel()),
+        return [
+            'resource' => $slug,
             'label' => $resource::getPluralModelLabel(),
             'records' => $records->map(fn (Model $record): array => $this->recordPreview($resource, $record))->all(),
         ];
-        session()->put($this->selectionKey(), ['selection' => $selection, 'expires' => now()->addMinutes(30)->timestamp]);
-
-        return $selection;
     }
 
-    /** @return array{resource: string, label: string, records: list<array{id: string, label: string}>}|null */
-    public function selection(): ?array
-    {
-        $plugin = FilamentAiAssistantPlugin::current();
-        if (! $plugin?->canUse()) {
-            return null;
-        }
-
-        $entry = session()->get($this->selectionKey());
-
-        if (! $entry || $entry['expires'] <= now()->timestamp) {
-            return null;
-        }
-
-        $selection = $entry['selection'];
-
-        try {
-            $resource = $this->resources->resource($selection['resource']);
-            $records = $this->records($resource, array_column($selection['records'], 'id'));
-        } catch (ValidationException) {
-            return null;
-        }
-
-        if (array_diff($this->available($resource), ['delete']) === []
-            || ! $records->every(fn (Model $record): bool => $this->canSee($resource, $record))) {
-            return null;
-        }
-
-        return [
-            ...$selection,
-            'records' => $records->map(fn (Model $record): array => $this->recordPreview($resource, $record))->all(),
-        ];
-    }
-
-    public function clearSelection(): void
-    {
-        session()->forget($this->selectionKey());
-    }
-
-    /** @return array<string, mixed> */
-    public function prepare(string $slug, string $operation, ?string $recordId): array
+    /**
+     * @param  array{resource: string, label: string, records: list<array{id: string, label: string}>}|null  $selection
+     * @return array<string, mixed>
+     */
+    public function prepare(string $slug, string $operation, ?string $recordId, ?array $selection = null): array
     {
         $resource = $this->resources->resource($slug);
         if (! in_array($operation, $this->available($resource), true)) {
@@ -119,7 +75,6 @@ final class ActionProposalStore
         }
 
         $bulk = $operation !== 'delete';
-        $selection = $bulk ? $this->selection() : null;
         if ($bulk && ($selection === null || $selection['resource'] !== $slug)) {
             $this->invalid('selection_required');
         }
@@ -372,11 +327,6 @@ final class ActionProposalStore
         $page = $resource::getPages()[$name] ?? null;
 
         return $page !== null && is_subclass_of($page->getPage(), $type);
-    }
-
-    private function selectionKey(): string
-    {
-        return 'filament-ai-assistant.selections.'.FilamentAiAssistantPlugin::current()->chatScope();
     }
 
     private function reviewKey(ListRecords|EditRecord $page): string
