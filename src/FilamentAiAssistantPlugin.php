@@ -36,6 +36,9 @@ final class FilamentAiAssistantPlugin implements Plugin
     /** @var array<class-string<resource>, list<string>> */
     private array $resourceActions = [];
 
+    /** @var array<class-string<resource>, true> */
+    private array $bulkDeleteResources = [];
+
     /** @var array<class-string<resource>, Closure(): string> */
     private array $deleteWarnings = [];
 
@@ -145,6 +148,14 @@ final class FilamentAiAssistantPlugin implements Plugin
         return $this;
     }
 
+    /** @param class-string<resource> $resource */
+    public function allowBulkDeleteFor(string $resource): self
+    {
+        $this->bulkDeleteResources[$resource] = true;
+
+        return $this;
+    }
+
     /** @param Closure(Action, class-string<resource>, string): bool $callback */
     public function allowActionUsing(Closure $callback): self
     {
@@ -170,7 +181,8 @@ final class FilamentAiAssistantPlugin implements Plugin
             return in_array($key, $actions, true);
         }
 
-        return $this->discoversActions && ! $action instanceof DeleteBulkAction;
+        return $this->discoversActions
+            && (! $action instanceof DeleteBulkAction || isset($this->bulkDeleteResources[$resource]));
     }
 
     public function deleteWarningFor(string $resource, Closure $warning): self
