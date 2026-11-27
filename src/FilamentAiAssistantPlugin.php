@@ -24,6 +24,9 @@ final class FilamentAiAssistantPlugin implements Plugin
     /** @var list<QuickPrompt>|(Closure(): list<QuickPrompt>)|null */
     private array|Closure|null $quickPrompts = null;
 
+    /** @var bool|(Closure(): bool)|null */
+    private bool|Closure|null $liveProgress = null;
+
     private ?Closure $authorizer = null;
 
     private ?Closure $activityAuthorizer = null;
@@ -125,6 +128,21 @@ final class FilamentAiAssistantPlugin implements Plugin
     public function getInstructions(): ?string
     {
         return $this->instructions instanceof Closure ? ($this->instructions)() : $this->instructions;
+    }
+
+    /** @param bool|(Closure(): bool) $enabled */
+    public function liveProgress(bool|Closure $enabled = true): self
+    {
+        $this->liveProgress = $enabled;
+
+        return $this;
+    }
+
+    public function hasLiveProgress(): bool
+    {
+        return $this->liveProgress instanceof Closure
+            ? ($this->liveProgress)()
+            : ($this->liveProgress ?? (bool) config('filament-ai-assistant.live_progress', true));
     }
 
     /** @param list<QuickPrompt>|(Closure(): list<QuickPrompt>) $prompts */

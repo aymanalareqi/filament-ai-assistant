@@ -249,7 +249,8 @@
 
             <div class="fia-thinking" role="status" aria-atomic="true" x-show="sending" x-cloak>
                 <span class="fia-dots" aria-hidden="true"><i></i><i></i><i></i></span>
-                <span wire:stream="fia-progress" x-ref="progress" data-initial="{{ __('filament-ai-assistant::assistant.working') }}">
+                <span @if ($liveProgressEnabled) wire:stream="fia-progress" @endif
+                    x-ref="progress" data-initial="{{ __('filament-ai-assistant::assistant.working') }}">
                     {{ __('filament-ai-assistant::assistant.working') }}
                 </span>
             </div>

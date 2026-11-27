@@ -49,6 +49,7 @@ final class AssistantChat extends Component
         return view('filament-ai-assistant::assistant', [
             'messages' => $messages,
             'quickPrompts' => FilamentAiAssistantPlugin::current()?->getQuickPrompts() ?? [],
+            'liveProgressEnabled' => $this->supportsLiveProgress(),
         ]);
     }
 
@@ -238,7 +239,7 @@ final class AssistantChat extends Component
     /** @return (\Closure(string): void)|null */
     private function progressStream(): ?\Closure
     {
-        if (app()->runningUnitTests() || ! config('filament-ai-assistant.live_progress', true) || config('session.driver') === 'cookie') {
+        if (app()->runningUnitTests() || ! $this->supportsLiveProgress()) {
             return null;
         }
 
@@ -252,6 +253,12 @@ final class AssistantChat extends Component
             $previous = $message;
             $this->stream(to: 'fia-progress', content: e($message), replace: true);
         };
+    }
+
+    private function supportsLiveProgress(): bool
+    {
+        return config('session.driver') !== 'cookie'
+            && (FilamentAiAssistantPlugin::current()?->hasLiveProgress() ?? false);
     }
 
     private function appendTurn(string $userText, string $assistantText): void

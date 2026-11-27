@@ -291,6 +291,35 @@ final class AssistantPackageTest extends TestCase
         }
     }
 
+    public function test_panels_can_enable_or_disable_live_progress_independently_of_the_default(): void
+    {
+        $defaultPanel = Filament::getCurrentPanel();
+        $enabledPanel = Panel::make()->id('progress-enabled')
+            ->plugin(FilamentAiAssistantPlugin::make()
+                ->authorizeUsing(fn (FixtureUser $user): bool => $user->allowed)
+                ->liveProgress());
+        $disabledPanel = Panel::make()->id('progress-disabled')
+            ->plugin(FilamentAiAssistantPlugin::make()
+                ->authorizeUsing(fn (FixtureUser $user): bool => $user->allowed)
+                ->liveProgress(fn (): bool => false));
+
+        config(['filament-ai-assistant.live_progress' => false]);
+        Filament::setCurrentPanel($defaultPanel);
+        Livewire::test(AssistantChat::class)->assertDontSeeHtml('wire:stream="fia-progress"');
+
+        Filament::setCurrentPanel($enabledPanel);
+        Livewire::test(AssistantChat::class)->assertSeeHtml('wire:stream="fia-progress"');
+
+        config(['filament-ai-assistant.live_progress' => true]);
+        Filament::setCurrentPanel($disabledPanel);
+        Livewire::test(AssistantChat::class)
+            ->assertDontSeeHtml('wire:stream="fia-progress"')
+            ->assertSee('Preparing a response…');
+
+        Filament::setCurrentPanel($defaultPanel);
+        Livewire::test(AssistantChat::class)->assertSeeHtml('wire:stream="fia-progress"');
+    }
+
     public function test_chat_prepares_a_draft_and_the_unmodified_native_page_validates_and_saves_it(): void
     {
         $entry = Entry::query()->create(['name' => 'Before', 'secret_code' => 'do-not-expose']);
