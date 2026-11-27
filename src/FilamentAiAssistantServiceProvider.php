@@ -3,7 +3,9 @@
 namespace Alareqi\FilamentAiAssistant;
 
 use Filament\Actions\Action;
+use Filament\Actions\Events\ActionCalled;
 use Filament\Actions\Events\ActionCalling;
+use Filament\Resources\Events\RecordSaved;
 use Filament\Resources\Pages\CreateRecord;
 use Filament\Resources\Pages\EditRecord;
 use Filament\Resources\Pages\ListRecords;
@@ -11,11 +13,13 @@ use Filament\Resources\Pages\Page;
 use Filament\Resources\Pages\ViewRecord;
 use Filament\Support\Assets\Css;
 use Filament\Support\Facades\FilamentAsset;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Str;
 use Livewire\Component;
 use Livewire\Livewire;
+use Throwable;
 
 final class FilamentAiAssistantServiceProvider extends ServiceProvider
 {
@@ -28,6 +32,7 @@ final class FilamentAiAssistantServiceProvider extends ServiceProvider
     {
         $this->loadViewsFrom(__DIR__.'/../resources/views', 'filament-ai-assistant');
         $this->loadTranslationsFrom(__DIR__.'/../lang', 'filament-ai-assistant');
+        $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
         Livewire::component('filament-ai-assistant.chat', AssistantChat::class);
         $this->publishes([
             __DIR__.'/../config/filament-ai-assistant.php' => config_path('filament-ai-assistant.php'),
@@ -38,6 +43,14 @@ final class FilamentAiAssistantServiceProvider extends ServiceProvider
         ], 'alareqi/filament-ai-assistant');
 
         Event::listen(ActionCalling::class, static fn (Action $action) => app(ActionProposalStore::class)->claimConfirmation($action));
+        Event::listen(ActionCalled::class, static fn (Action $action) => app(AssistantActivityRecorder::class)->actionReturned($action));
+        Event::listen(RecordSaved::class, static fn (Model $record, array $data, Page $page) => app(AssistantActivityRecorder::class)->rememberSavedRecord($page, $record));
+
+        Livewire::listen('exception', static function (Component $component, Throwable $exception): void {
+            if ($component instanceof Page) {
+                app(AssistantActivityRecorder::class)->failed($component, $exception);
+            }
+        });
 
         // The native resource page has mounted and authorized the record before rendering its form.
         Livewire::listen('render', static function (Component $component): void {
@@ -102,6 +115,16 @@ final class FilamentAiAssistantServiceProvider extends ServiceProvider
 
             $store = app(DraftStore::class);
             $review = $store->beforeSave($component);
+            if ($review !== null) {
+                $operation = $review['operation'];
+                app(AssistantActivityRecorder::class)->watch(
+                    $component,
+                    $review['id'],
+                    'draft:'.$operation,
+                    __('filament-ai-assistant::activity.'.$operation),
+                    $review['record'] === null ? [] : [$review['record']],
+                );
+            }
 
             return $review === null ? null : static function ($result) use ($store, $component, $review) {
                 $store->afterSave($component, $review);

@@ -13,6 +13,7 @@ use Filament\View\PanelsRenderHook;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Contracts\View\View;
 use Illuminate\Support\Facades\Gate;
+use UnitEnum;
 
 /** @phpstan-type QuickPrompt array{label: string, prompt: string, icon?: string, requiresRecord?: bool} */
 final class FilamentAiAssistantPlugin implements Plugin
@@ -24,6 +25,10 @@ final class FilamentAiAssistantPlugin implements Plugin
     private array|Closure|null $quickPrompts = null;
 
     private ?Closure $authorizer = null;
+
+    private ?Closure $activityAuthorizer = null;
+
+    private string|UnitEnum|null $activityNavigationGroup = null;
 
     private ?Closure $resourceFilter = null;
 
@@ -67,6 +72,10 @@ final class FilamentAiAssistantPlugin implements Plugin
 
     public function register(Panel $panel): void
     {
+        if ($this->recordsActivity()) {
+            $panel->pages([AssistantActivityPage::class]);
+        }
+
         $panel->renderHook(
             PanelsRenderHook::BODY_END,
             fn (): View|string => $this->canUse()
@@ -76,6 +85,34 @@ final class FilamentAiAssistantPlugin implements Plugin
     }
 
     public function boot(Panel $panel): void {}
+
+    /** @param Closure(Authenticatable, Panel): bool $authorize */
+    public function withActivity(Closure $authorize, string|UnitEnum|null $navigationGroup = null): self
+    {
+        $this->activityAuthorizer = $authorize;
+        $this->activityNavigationGroup = $navigationGroup;
+
+        return $this;
+    }
+
+    public function recordsActivity(): bool
+    {
+        return $this->activityAuthorizer !== null;
+    }
+
+    public function canViewActivity(): bool
+    {
+        $panel = Filament::getCurrentPanel();
+        $user = $panel?->auth()->user();
+
+        return $this->activityAuthorizer !== null && $user !== null
+            && ($this->activityAuthorizer)($user, $panel);
+    }
+
+    public function getActivityNavigationGroup(): string|UnitEnum|null
+    {
+        return $this->activityNavigationGroup;
+    }
 
     /** @param string|Closure(): string $instructions */
     public function instructions(string|Closure $instructions): self

@@ -22,7 +22,11 @@ final class ActionProposalStore
 {
     public const MAX_RECORDS = 100;
 
-    public function __construct(private ResourceRegistry $resources, private NativeResourceActions $native) {}
+    public function __construct(
+        private ResourceRegistry $resources,
+        private NativeResourceActions $native,
+        private AssistantActivityRecorder $activity,
+    ) {}
 
     /**
      * @param  array{resource: string, label: string, records: list<array{id: string, label: string}>}|null  $selection
@@ -206,6 +210,7 @@ final class ActionProposalStore
         abort_unless(count($page->mountedActions) === 1 && $action->getName() === Str::after($proposal['action'], ':')
             && ($page->mountedActions[0]['context'] ?? null) === $this->actionContext($id, $proposal), 409);
         abort_unless(Cache::add($this->confirmationKey($id), true, max(1, $proposal['expires'] - now()->timestamp)), 409);
+        $this->activity->watch($page, $id, $proposal['action'], $this->native->label($action), $proposal['ids']);
     }
 
     /** @param array<string,mixed> $proposal */
@@ -217,6 +222,7 @@ final class ActionProposalStore
 
         session()->forget('filament-ai-assistant.actions.'.$proposal['id']);
         $this->cancel($page);
+        $this->activity->actionFinished($page);
 
         Log::info('Filament AI assistant action confirmed.', [
             'actor_id' => Filament::auth()->id(),

@@ -3,6 +3,7 @@
 namespace Alareqi\FilamentAiAssistant\Tests;
 
 use Alareqi\FilamentAiAssistant\ActionProposalStore;
+use Alareqi\FilamentAiAssistant\AssistantActivity;
 use Alareqi\FilamentAiAssistant\AssistantAgent;
 use Alareqi\FilamentAiAssistant\AssistantChat;
 use Alareqi\FilamentAiAssistant\CurrentRecordContext;
@@ -485,6 +486,68 @@ final class AssistantPackageTest extends TestCase
             ->assertSee('I found Shared name A and Shared name B.')
             ->assertSet('recordChoice', null)
             ->assertSet('draft', null);
+    }
+
+    public function test_activity_records_the_saved_draft_record_even_when_creating_another(): void
+    {
+        $this->artisan('migrate', ['--no-interaction' => true])->assertSuccessful();
+        FilamentAiAssistantPlugin::current()->withActivity(fn (): bool => true);
+        $draft = app(DraftStore::class)->prepare('entries', 'create', null, [['field' => 'name', 'value' => 'Test draft value']]);
+
+        Livewire::withQueryParams(['assistantDraft' => $draft['id']])->test(CreateEntry::class)
+            ->call('create', true)
+            ->assertHasNoFormErrors();
+
+        $record = Entry::query()->sole();
+        $activity = AssistantActivity::query()->sole();
+        $this->assertSame('draft:create', $activity->operation);
+        $this->assertSame(AssistantActivity::SUCCEEDED, $activity->outcome);
+        $this->assertSame([(string) $record->getKey()], $activity->record_ids);
+        $this->assertStringNotContainsString('Test draft value', $activity->toJson());
+    }
+
+    public function test_activity_uses_the_native_action_failure_status_without_logging_form_data(): void
+    {
+        $this->artisan('migrate', ['--no-interaction' => true])->assertSuccessful();
+        config(['assistant-test.native-action-fixtures' => true]);
+        FilamentAiAssistantPlugin::current()
+            ->withActivity(fn (): bool => true)
+            ->actionsFor(EntryResource::class, ['index:failure']);
+        $proposal = app(ActionProposalStore::class)->prepare('entries', 'index:failure', null);
+
+        Livewire::withQueryParams(['assistantAction' => $proposal['id']])->test(ListEntries::class)
+            ->set('mountedActions.0.data.note', 'Private data')
+            ->call('callMountedAction')
+            ->assertOk();
+
+        $activity = AssistantActivity::query()->sole();
+        $this->assertSame('index:failure', $activity->operation);
+        $this->assertSame(AssistantActivity::FAILED, $activity->outcome);
+        $this->assertStringNotContainsString('Private data', $activity->toJson());
+    }
+
+    public function test_activity_records_failed_confirmations_without_storing_the_exception_text(): void
+    {
+        $this->artisan('migrate', ['--no-interaction' => true])->assertSuccessful();
+        config(['assistant-test.native-action-fixtures' => true]);
+        FilamentAiAssistantPlugin::current()
+            ->withActivity(fn (): bool => true)
+            ->actionsFor(EntryResource::class, ['index:exception']);
+        $proposal = app(ActionProposalStore::class)->prepare('entries', 'index:exception', null);
+        $this->withoutExceptionHandling();
+
+        try {
+            Livewire::withQueryParams(['assistantAction' => $proposal['id']])->test(ListEntries::class)
+                ->call('callMountedAction');
+            $this->fail('Expected the native action to throw.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('Private internal detail', $exception->getMessage());
+        }
+
+        $activity = AssistantActivity::query()->sole();
+        $this->assertSame('index:exception', $activity->operation);
+        $this->assertSame(AssistantActivity::FAILED, $activity->outcome);
+        $this->assertStringNotContainsString('Private internal detail', $activity->toJson());
     }
 
     public function test_numeric_search_finds_exact_codes_and_database_ids(): void
@@ -1071,7 +1134,13 @@ final class ListEntries extends ListRecords
     protected function getHeaderActions(): array
     {
         return config('assistant-test.native-action-fixtures')
-            ? [Action::make('notice')->requiresConfirmation()->action(fn () => null)]
+            ? [
+                Action::make('notice')->requiresConfirmation()->action(fn () => null),
+                Action::make('failure')->schema([TextInput::make('note')->required()])
+                    ->action(fn (Action $action) => $action->failure()),
+                Action::make('exception')->requiresConfirmation()
+                    ->action(fn () => throw new \RuntimeException('Private internal detail')),
+            ]
             : [];
     }
 }

@@ -13,7 +13,7 @@ use Illuminate\Validation\ValidationException;
 
 final class DraftStore
 {
-    public function __construct(private ResourceRegistry $resources) {}
+    public function __construct(private ResourceRegistry $resources, private AssistantActivityRecorder $activity) {}
 
     /**
      * @param  list<array{field: string, value: mixed}>  $changes
@@ -124,7 +124,7 @@ final class DraftStore
     /** @param array<string, mixed> $review */
     public function afterSave(CreateRecord|EditRecord $page, array $review): void
     {
-        $record = $page->getRecord();
+        $record = $page->getRecord() ?? $this->activity->savedRecord($page);
         $savedRecord = $record?->exists ? $record->fresh() : null;
         if ($savedRecord === null || ($review['operation'] === 'edit' && $this->fingerprint($savedRecord) === $review['version'])) {
             return;
@@ -134,6 +134,8 @@ final class DraftStore
         $after = $this->draftFieldValues($savedRecord, $review['patch']);
         $savedFields = array_values(array_filter($review['patch'], fn (string $path): bool => ($before[$path] ?? null) !== ($after[$path] ?? null)
             || array_key_exists($path, $before) !== array_key_exists($path, $after)));
+
+        $this->activity->draftSaved($page, $savedRecord);
 
         Log::info('Filament AI assistant draft reviewed and saved.', [
             'actor_id' => $review['actor'],
