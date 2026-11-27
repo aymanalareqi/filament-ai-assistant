@@ -550,6 +550,39 @@ final class AssistantPackageTest extends TestCase
         $this->assertStringNotContainsString('Private internal detail', $activity->toJson());
     }
 
+    public function test_progress_reports_actual_tool_steps_in_the_panel_language_without_record_data(): void
+    {
+        $entry = Entry::query()->create(['name' => 'Private record name']);
+        $selection = app(ActionProposalStore::class)->selectionFor('entries', [(string) $entry->id]);
+        $progress = [];
+        app()->setLocale('ar');
+        AssistantAgent::fake([
+            new ToolCall('find', 'search_records', ['query' => $entry->name, 'purpose' => 'browse']),
+            new ToolCall('list', 'list_actions', ['resource' => 'entries']),
+            new ToolCall('stage', 'prepare_action', ['resource' => 'entries', 'operation' => 'bulk:publish']),
+            'Draft ready.',
+        ])->preventStrayPrompts();
+        $agent = new AssistantAgent(
+            app(ResourceRegistry::class),
+            app(DraftStore::class),
+            currentList: ['resource' => 'entries', 'label' => 'السجلات'],
+            selection: $selection,
+            onProgress: function (string $message) use (&$progress): void {
+                $progress[] = $message;
+            },
+        );
+
+        $agent->prompt('Prepare the publish action.', provider: 'gemini');
+
+        $this->assertSame([
+            'جارٍ البحث في قائمة السجلات…',
+            'جارٍ التحقق من الإجراءات المتاحة…',
+            'جارٍ تجهيز الإجراء للمراجعة…',
+        ], $progress);
+        $this->assertNotNull($agent->draft());
+        $this->assertFalse($entry->fresh()->published);
+    }
+
     public function test_numeric_search_finds_exact_codes_and_database_ids(): void
     {
         $idMatch = Entry::query()->create(['id' => 123, 'name' => 'ID match']);

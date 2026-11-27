@@ -2,6 +2,7 @@
 
 namespace Alareqi\FilamentAiAssistant;
 
+use Closure;
 use Illuminate\Contracts\JsonSchema\JsonSchema;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Validation\ValidationException;
@@ -39,6 +40,7 @@ final class AssistantAgent implements Agent, Conversational, HasTools
      * @param  array{resource: string, record_id: string, resource_label: string, record_label: string, can_edit: bool}|null  $currentRecord
      * @param  array{resource: string, label: string}|null  $currentList
      * @param  array{resource: string, label: string, records: list<array{id: string, label: string}>}|null  $selection
+     * @param  (Closure(string): void)|null  $onProgress
      */
     public function __construct(
         private ResourceRegistry $resources,
@@ -48,6 +50,7 @@ final class AssistantAgent implements Agent, Conversational, HasTools
         private bool $recordExplicitlyChosen = false,
         private ?array $currentList = null,
         private ?array $selection = null,
+        private ?Closure $onProgress = null,
     ) {}
 
     public function instructions(): string
@@ -105,7 +108,11 @@ final class AssistantAgent implements Agent, Conversational, HasTools
             ]),
             new AssistantTool('list_resources', 'List accessible panel resources and operations. Edit permission is checked per record.',
                 fn (JsonSchema $schema): array => [],
-                fn (Request $request): array => $this->resources->catalog(),
+                function (): array {
+                    $this->reportProgress('checking_resources');
+
+                    return $this->resources->catalog();
+                },
             ),
             new AssistantTool('search_records', $this->currentList === null
                 ? 'Find records by name, title, code, or ID using the resources available to this admin.'
@@ -125,6 +132,12 @@ final class AssistantAgent implements Agent, Conversational, HasTools
                         'purpose' => 'sometimes|in:'.self::SEARCH_SINGLE_RECORD.','.self::SEARCH_BROWSE,
                     ]);
                     $resource = $args['resource'] ?? $this->currentList['resource'];
+
+                    if ($resource === ($this->currentList['resource'] ?? null)) {
+                        $this->reportProgress('searching_list', ['resource' => $this->currentList['label']]);
+                    } else {
+                        $this->reportProgress('searching');
+                    }
 
                     $records = $this->resources->search($resource, $args['query']);
                     $this->searchMatches[$resource] = $records;
@@ -157,6 +170,7 @@ final class AssistantAgent implements Agent, Conversational, HasTools
                 fn (JsonSchema $schema): array => $this->targetSchema($schema),
                 function (Request $request): array {
                     $args = $request->validate($this->targetRules());
+                    $this->reportProgress('checking_form');
                     $resource = $this->resources->resource($args['resource']);
                     $context = $this->resources->form($resource, $args['operation'], $args['record_id'] ?? null);
 
@@ -188,6 +202,7 @@ final class AssistantAgent implements Agent, Conversational, HasTools
                         return ['waiting_for_user' => true];
                     }
 
+                    $this->reportProgress('preparing_draft');
                     $this->draft = $this->drafts->prepare($args['resource'], $args['operation'], $args['record_id'] ?? null, $args['changes']);
 
                     return ['prepared' => true, 'fields' => array_column($this->draft['fields'], 'label')];
@@ -204,6 +219,7 @@ final class AssistantAgent implements Agent, Conversational, HasTools
                 ],
                 function (Request $request) use ($actions): array {
                     $args = $request->validate(['resource' => 'required|string|max:150', 'record_id' => 'nullable|string|max:100']);
+                    $this->reportProgress('checking_actions');
 
                     return ['actions' => $actions->describeActions($args['resource'], $args['record_id'] ?? null, $this->selection)];
                 },
@@ -229,12 +245,21 @@ final class AssistantAgent implements Agent, Conversational, HasTools
                         return ['waiting_for_user' => true];
                     }
 
+                    $this->reportProgress('preparing_action');
                     $this->draft = $actions->prepare($args['resource'], $args['operation'], $args['record_id'] ?? null, $this->selection);
 
                     return ['prepared' => true, 'records' => count($this->draft['records'])];
                 },
             ),
         ];
+    }
+
+    /** @param array<string, string> $replace */
+    private function reportProgress(string $stage, array $replace = []): void
+    {
+        if ($this->onProgress !== null) {
+            ($this->onProgress)(__('filament-ai-assistant::assistant.progress.'.$stage, $replace));
+        }
     }
 
     private function offerRecordChoice(string $resource): bool

@@ -45,13 +45,18 @@
         async submitMessage() {
             if (this.sending) return;
             this.syncPageContext();
+            const table = this.activeTable();
+            const all = table?.isTrackingDeselectedRecords === true;
+            const ids = table?.selectedRecords && !all ? Array.from(table.selectedRecords, String) : [];
+            await this.runMessageRequest(() => this.$wire.send(this.includeRecord ? (this.recordContext?.token ?? null) : null, this.listContext?.token ?? null, ids, all));
+        },
+        async runMessageRequest(request) {
+            if (this.sending) return;
+            this.$refs.progress.textContent = this.$refs.progress.dataset.initial;
             this.sending = true;
             this.$nextTick(() => this.scrollToLatest());
             try {
-                const table = this.activeTable();
-                const all = table?.isTrackingDeselectedRecords === true;
-                const ids = table?.selectedRecords && !all ? Array.from(table.selectedRecords, String) : [];
-                await this.$wire.send(this.includeRecord ? (this.recordContext?.token ?? null) : null, this.listContext?.token ?? null, ids, all);
+                await request();
             } finally {
                 this.sending = false;
             }
@@ -182,7 +187,8 @@
                     <div class="fia-choices">
                         @foreach ($recordChoice['candidates'] as $candidate)
                             <button type="button" class="fia-prompt" data-choice="{{ $recordChoice['id'] }}" data-record="{{ $candidate['id'] }}"
-                                x-on:click="$wire.chooseRecord($el.dataset.choice, $el.dataset.record)" wire:loading.attr="disabled">
+                                x-on:click="runMessageRequest(() => $wire.chooseRecord($el.dataset.choice, $el.dataset.record))"
+                                x-bind:disabled="sending" wire:loading.attr="disabled">
                                 <span dir="auto">{{ $candidate['label'] }}</span>
                                 <small dir="ltr">#{{ $candidate['id'] }}</small>
                             </button>
@@ -241,9 +247,11 @@
                 </div>
             @endif
 
-            <div class="fia-thinking" role="status" wire:loading.flex wire:target="send, chooseRecord">
+            <div class="fia-thinking" role="status" aria-atomic="true" x-show="sending" x-cloak>
                 <span class="fia-dots" aria-hidden="true"><i></i><i></i><i></i></span>
-                <span>{{ __('filament-ai-assistant::assistant.working') }}</span>
+                <span wire:stream="fia-progress" x-ref="progress" data-initial="{{ __('filament-ai-assistant::assistant.working') }}">
+                    {{ __('filament-ai-assistant::assistant.working') }}
+                </span>
             </div>
         </div>
 

@@ -191,7 +191,16 @@ final class AssistantChat extends Component
 
         RateLimiter::hit($key);
         $agentHistory = $recordExplicitlyChosen ? array_slice($this->history, 0, -2) : $this->history;
-        $agent = new AssistantAgent($resources, $drafts, array_slice($agentHistory, -10), $currentRecord, $recordExplicitlyChosen, $currentList, $selection);
+        $agent = new AssistantAgent(
+            $resources,
+            $drafts,
+            array_slice($agentHistory, -10),
+            $currentRecord,
+            $recordExplicitlyChosen,
+            $currentList,
+            $selection,
+            $this->progressStream(),
+        );
 
         try {
             $response = $agent->prompt(
@@ -224,6 +233,25 @@ final class AssistantChat extends Component
         $this->saveConversation($choice === null ? null : $originalMessage);
         $this->reset('message');
         $this->dispatch('filament-ai-assistant-response');
+    }
+
+    /** @return (\Closure(string): void)|null */
+    private function progressStream(): ?\Closure
+    {
+        if (app()->runningUnitTests() || ! config('filament-ai-assistant.live_progress', true) || config('session.driver') === 'cookie') {
+            return null;
+        }
+
+        $previous = null;
+
+        return function (string $message) use (&$previous): void {
+            if ($message === $previous) {
+                return;
+            }
+
+            $previous = $message;
+            $this->stream(to: 'fia-progress', content: e($message), replace: true);
+        };
     }
 
     private function appendTurn(string $userText, string $assistantText): void
