@@ -41,6 +41,9 @@ return [
     'yes' => 'Yes',
     'no' => 'No',
     'choice' => [
+        'action_title' => 'Choose an action',
+        'action_prompt' => 'Which action did you mean? Choose an option or type your answer.',
+        'action_placeholder' => 'Or type your answer…',
         'title' => 'Choose the correct record',
         'prompt' => 'I found several matching records. Which one did you mean?',
         'cancel' => 'Cancel selection',
@@ -66,6 +69,9 @@ return [
     'errors' => [
         'current_list_unavailable' => 'This list is no longer available. Refresh the page or open another list.',
         'choice_pending' => 'Choose a record or cancel the selection before sending another message.',
+        'action_choice_pending' => 'Answer or cancel the action question before starting another request.',
+        'choose_listed_action' => 'This option is not available. Choose one of the actions shown.',
+        'action_choice_target' => 'This answer must apply to the original selection. Cancel and start a new request to use another target.',
         'choose_listed_record' => 'This option is not available. Choose one of the records shown.',
         'choice_unavailable' => 'This record is no longer available. Choose another record or cancel and search again.',
         'current_record_unavailable' => 'This record is no longer available. Reopen its page or detach it to continue.',

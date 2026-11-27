@@ -811,6 +811,98 @@ final class AssistantPackageTest extends TestCase
         return $parameters['assistantDraft'];
     }
 
+    public function test_action_choice_only_offers_available_toolbar_actions_and_prepares_the_exact_picked_action(): void
+    {
+        $first = Entry::query()->create(['name' => 'First']);
+        $second = Entry::query()->create(['name' => 'Second']);
+        $ids = [(string) $first->id, (string) $second->id];
+        $token = app(CurrentRecordContext::class)->issueList(EntryResource::class)['token'];
+        AssistantAgent::fake([
+            new ToolCall('list', 'list_actions', ['resource' => 'entries']),
+            new ToolCall('ask', 'ask_action_choice', [
+                'resource' => 'entries', 'operations' => ['bulk:publish', 'bulk:unpublish', 'bulk:missing'],
+            ]),
+            new ToolCall('premature', 'prepare_action', ['resource' => 'entries', 'operation' => 'bulk:publish']),
+            'Which action?',
+        ])->preventStrayPrompts();
+
+        $chat = Livewire::test(AssistantChat::class)
+            ->set('message', 'Change the status of the checked entries')
+            ->call('send', null, $token, $ids)
+            ->assertSee('Choose an action')
+            ->assertSee('Or type your answer…')
+            ->assertSet('draft', null);
+        $choice = $chat->get('actionChoice');
+        $this->assertSame(['bulk:publish', 'bulk:unpublish'], array_column($choice['options'], 'id'));
+
+        $resumed = Livewire::test(AssistantChat::class)
+            ->assertSee('Choose an action')
+            ->call('chooseAction', $choice['id'], 'bulk:missing')->assertHasErrors('message')
+            ->call('chooseAction', $choice['id'], 'bulk:publish')
+            ->assertHasNoErrors()
+            ->assertSet('actionChoice', null)
+            ->assertSee('Review action');
+
+        $this->assertSame('bulk:publish', $resumed->get('draft')['operation']);
+        $this->assertSame($ids, array_column($resumed->get('draft')['records'], 'id'));
+        $this->assertFalse($first->fresh()->published);
+        $this->assertFalse($second->fresh()->published);
+    }
+
+    public function test_typed_action_clarification_keeps_the_original_selection_and_cannot_change_its_scope(): void
+    {
+        $entry = Entry::query()->create(['name' => 'Checked', 'published' => true]);
+        $token = app(CurrentRecordContext::class)->issueList(EntryResource::class)['token'];
+        AssistantAgent::fake([
+            new ToolCall('ask', 'ask_action_choice', ['resource' => 'entries', 'operations' => ['bulk:publish', 'bulk:unpublish']]),
+            'Which action?',
+            new ToolCall('wrong-target', 'prepare_action', [
+                'resource' => 'entries', 'operation' => 'edit:delete', 'record_id' => (string) $entry->id,
+            ]),
+            new ToolCall('correct-target', 'prepare_action', ['resource' => 'entries', 'operation' => 'bulk:unpublish']),
+            'Draft prepared',
+        ])->preventStrayPrompts();
+
+        $chat = Livewire::test(AssistantChat::class)
+            ->set('message', 'Change the status of the checked entry')
+            ->call('send', null, $token, [(string) $entry->id])
+            ->assertSee('Choose an action');
+
+        $chat->set('message', 'Please hide it from the catalog')
+            ->call('answerActionChoice', $chat->get('actionChoice')['id'])
+            ->assertHasNoErrors()
+            ->assertSet('actionChoice', null)
+            ->assertSee('Review action');
+        $this->assertSame('bulk:unpublish', $chat->get('draft')['operation']);
+        $this->assertTrue($entry->fresh()->published);
+    }
+
+    public function test_a_pending_action_choice_rechecks_availability_and_can_be_cancelled(): void
+    {
+        $entry = Entry::query()->create(['name' => 'Checked']);
+        $token = app(CurrentRecordContext::class)->issueList(EntryResource::class)['token'];
+        AssistantAgent::fake([
+            new ToolCall('ask', 'ask_action_choice', ['resource' => 'entries', 'operations' => ['bulk:publish', 'bulk:unpublish']]),
+            'Which action?',
+        ])->preventStrayPrompts();
+
+        $chat = Livewire::test(AssistantChat::class)
+            ->set('message', 'Change the checked entry')
+            ->call('send', null, $token, [(string) $entry->id]);
+        $choiceId = $chat->get('actionChoice')['id'];
+        FilamentAiAssistantPlugin::current()->allowActionUsing(fn (Action $action): bool => $action->getName() !== 'publish');
+
+        $chat->call('chooseAction', $choiceId, 'bulk:publish')
+            ->assertHasErrors('message')
+            ->assertSet('draft', null)
+            ->assertSee('Choose an action')
+            ->call('cancelActionChoice', $choiceId)
+            ->assertHasNoErrors()
+            ->assertSet('actionChoice', null)
+            ->assertSee('Request cancelled. No changes were made.');
+        $this->assertFalse($entry->fresh()->published);
+    }
+
     public function test_assistant_bulk_actions_only_apply_to_the_explicit_selection_after_native_confirmation(): void
     {
         $one = Entry::query()->create(['name' => 'First item']);
@@ -1008,7 +1100,7 @@ final class AssistantPackageTest extends TestCase
         $this->assertFalse($entry->fresh()->published);
     }
 
-    public function test_bulk_delete_is_off_until_the_panel_explicitly_enables_it(): void
+    public function test_explicit_action_allowlists_can_restrict_native_bulk_delete_and_keep_its_description(): void
     {
         $entry = Entry::query()->create(['name' => 'Selected']);
         $store = app(ActionProposalStore::class);
@@ -1018,6 +1110,7 @@ final class AssistantPackageTest extends TestCase
 
         FilamentAiAssistantPlugin::current()->actionsFor(EntryResource::class, ['bulk_delete']);
         $proposal = $store->prepare('entries', 'bulk_delete', null, $selection);
+        $this->assertSame('Native toolbar delete description.', $proposal['warning']);
         $review = Livewire::withQueryParams(['assistantAction' => $proposal['id']])->test(ListEntries::class);
 
         $this->assertModelExists($entry);
@@ -1158,7 +1251,7 @@ final class EntryResource extends Resource
 
         return $table->toolbarActions([
             ...$publishActions,
-            DeleteBulkAction::make()->authorizeIndividualRecords('delete'),
+            DeleteBulkAction::make()->authorizeIndividualRecords('delete')->modalDescription('Native toolbar delete description.'),
         ]);
     }
 

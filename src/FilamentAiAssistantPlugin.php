@@ -4,7 +4,6 @@ namespace Alareqi\FilamentAiAssistant;
 
 use Closure;
 use Filament\Actions\Action;
-use Filament\Actions\DeleteBulkAction;
 use Filament\Contracts\Plugin;
 use Filament\Facades\Filament;
 use Filament\Panel;
@@ -43,12 +42,6 @@ final class FilamentAiAssistantPlugin implements Plugin
 
     /** @var array<class-string<resource>, list<string>> */
     private array $resourceActions = [];
-
-    /** @var array<class-string<resource>, true> */
-    private array $bulkDeleteResources = [];
-
-    /** @var array<class-string<resource>, Closure(): string> */
-    private array $deleteWarnings = [];
 
     public static function make(): self
     {
@@ -177,15 +170,10 @@ final class FilamentAiAssistantPlugin implements Plugin
     /**
      * @param  class-string<resource>  $resource
      * @param  list<string>  $actions
-     * @param  (Closure(): string)|null  $deleteWarning
      */
-    public function actionsFor(string $resource, array $actions, ?Closure $deleteWarning = null): self
+    public function actionsFor(string $resource, array $actions): self
     {
         $this->resourceActions[$resource] = $actions;
-
-        if ($deleteWarning !== null) {
-            $this->deleteWarnings[$resource] = $deleteWarning;
-        }
 
         return $this;
     }
@@ -199,14 +187,6 @@ final class FilamentAiAssistantPlugin implements Plugin
     public function discoverActions(bool $enabled = true): self
     {
         $this->discoversActions = $enabled;
-
-        return $this;
-    }
-
-    /** @param class-string<resource> $resource */
-    public function allowBulkDeleteFor(string $resource): self
-    {
-        $this->bulkDeleteResources[$resource] = true;
 
         return $this;
     }
@@ -236,20 +216,7 @@ final class FilamentAiAssistantPlugin implements Plugin
             return in_array($key, $actions, true);
         }
 
-        return $this->discoversActions
-            && (! $action instanceof DeleteBulkAction || isset($this->bulkDeleteResources[$resource]));
-    }
-
-    public function deleteWarningFor(string $resource, Closure $warning): self
-    {
-        $this->deleteWarnings[$resource] = $warning;
-
-        return $this;
-    }
-
-    public function getDeleteWarning(string $resource): ?string
-    {
-        return isset($this->deleteWarnings[$resource]) ? ($this->deleteWarnings[$resource])() : null;
+        return $this->discoversActions;
     }
 
     /** @param Closure(Authenticatable, Panel): bool $callback */

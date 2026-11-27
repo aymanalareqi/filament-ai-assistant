@@ -35,12 +35,16 @@ final class AssistantAgent implements Agent, Conversational, HasTools
     /** @var array{resource: string, candidates: list<array{id: string, label: string}>}|null */
     private ?array $recordChoice = null;
 
+    /** @var array{resource: string, record_id: ?string, record_ids: list<string>, options: list<array{id: string, label: string}>}|null */
+    private ?array $actionChoice = null;
+
     /**
      * @param  list<array{role: string, text: string}>  $history
      * @param  array{resource: string, record_id: string, resource_label: string, record_label: string, can_edit: bool}|null  $currentRecord
      * @param  array{resource: string, label: string}|null  $currentList
      * @param  array{resource: string, label: string, records: list<array{id: string, label: string}>}|null  $selection
      * @param  (Closure(string): void)|null  $onProgress
+     * @param  array{resource: string, record_id: ?string, kind: string}|null  $actionTarget
      */
     public function __construct(
         private ResourceRegistry $resources,
@@ -51,11 +55,16 @@ final class AssistantAgent implements Agent, Conversational, HasTools
         private ?array $currentList = null,
         private ?array $selection = null,
         private ?Closure $onProgress = null,
+        private ?array $actionTarget = null,
     ) {}
 
     public function instructions(): string
     {
         $instructions = FilamentAiAssistantPlugin::current()?->getInstructions() ?? Config::string('filament-ai-assistant.instructions');
+
+        if ($this->actionTarget !== null) {
+            $instructions .= "\n\nThe latest user message answers a pending action clarification. Interpret it with the preceding request. Keep its original resource and target, including the original checked rows if any. Use prepare_action for the clarified native action. If the answer is still unclear, ask another action choice or explain what is missing. Do not treat the answer as approval to execute anything.";
+        }
 
         if ($this->recordExplicitlyChosen) {
             return $instructions."\n\nThe user already chose the exact record for this request. Call current_record for that selection, then continue the original request. Do not ask them to choose again or prepare a change for any other record.";
@@ -93,6 +102,12 @@ final class AssistantAgent implements Agent, Conversational, HasTools
     public function recordChoice(): ?array
     {
         return $this->recordChoice;
+    }
+
+    /** @return array{resource: string, record_id: ?string, record_ids: list<string>, options: list<array{id: string, label: string}>}|null */
+    public function actionChoice(): ?array
+    {
+        return $this->actionChoice;
     }
 
     public function tools(): iterable
@@ -144,8 +159,8 @@ final class AssistantAgent implements Agent, Conversational, HasTools
 
                     $result = ['resource' => $resource, 'records' => $records];
 
-                    if (($args['purpose'] ?? null) === self::SEARCH_SINGLE_RECORD && ! $this->recordExplicitlyChosen
-                        && $this->recordChoice === null && $this->draft === null && $this->offerRecordChoice($resource)) {
+                    if (($args['purpose'] ?? null) === self::SEARCH_SINGLE_RECORD && ! $this->recordExplicitlyChosen && $this->actionTarget === null
+                        && $this->recordChoice === null && $this->actionChoice === null && $this->draft === null && $this->offerRecordChoice($resource)) {
                         $result['next_tool'] = ['name' => 'ask_record_choice', 'arguments' => ['resource' => $resource]];
                     }
 
@@ -158,9 +173,9 @@ final class AssistantAgent implements Agent, Conversational, HasTools
                     $args = $request->validate(['resource' => 'required|string|max:150']);
 
                     return match (true) {
-                        $this->recordChoice !== null => ['waiting_for_user' => true],
+                        $this->recordChoice !== null || $this->actionChoice !== null => ['waiting_for_user' => true],
                         $this->draft !== null => ['prepared' => true],
-                        $this->recordExplicitlyChosen => ['record_already_chosen' => true],
+                        $this->recordExplicitlyChosen || $this->actionTarget !== null => ['record_already_chosen' => true],
                         $this->offerRecordChoice($args['resource']) => ['waiting_for_user' => true],
                         default => ['error' => 'Search for multiple candidate records first.'],
                     };
@@ -198,7 +213,11 @@ final class AssistantAgent implements Agent, Conversational, HasTools
                         'changes.*.value' => 'present|nullable|string|max:6000',
                     ]);
 
-                    if ($this->waitsForRecordChoice($args['resource'], $args['operation'] === 'edit' ? $args['record_id'] : null)) {
+                    if ($this->actionTarget !== null) {
+                        throw ValidationException::withMessages(['operation' => __('filament-ai-assistant::assistant.errors.action_choice_target')]);
+                    }
+
+                    if ($this->waitsForChoice($args['resource'], $args['operation'] === 'edit' ? $args['record_id'] : null)) {
                         return ['waiting_for_user' => true];
                     }
 
@@ -224,6 +243,14 @@ final class AssistantAgent implements Agent, Conversational, HasTools
                     return ['actions' => $actions->describeActions($args['resource'], $args['record_id'] ?? null, $this->selection)];
                 },
             ),
+            new AssistantTool('ask_action_choice', 'Pause for the admin to choose between two or more plausible native actions for the same target. Use exact action IDs from list_actions and never invent options. Omit record_id for checked rows. Do not ask in plain text. Stop when waiting_for_user is true.',
+                fn (JsonSchema $schema): array => [
+                    'resource' => $schema->string()->required(),
+                    'record_id' => $schema->string(),
+                    'operations' => $schema->array()->items($schema->string())->required(),
+                ],
+                fn (Request $request): array => $this->offerActionChoice($request, $actions),
+            ),
             new AssistantTool('prepare_action', 'Open an existing Filament action for review only. Use the exact action ID reported by list_actions as operation. Supply the exact record_id only for row, view, or edit actions. Bulk actions use the checked rows from the same resource table. Ask when a record is ambiguous. Action inputs are entered by the admin in Filament.',
                 fn (JsonSchema $schema): array => [
                     'resource' => $schema->string()->required(),
@@ -241,7 +268,12 @@ final class AssistantAgent implements Agent, Conversational, HasTools
                         'record_id' => 'nullable|string|max:100',
                     ]);
 
-                    if ($this->waitsForRecordChoice($args['resource'], $args['record_id'] ?? null)) {
+                    $this->assertActionTarget(
+                        $args['resource'],
+                        $args['record_id'] ?? null,
+                        app(NativeResourceActions::class)->targetKind($args['operation']),
+                    );
+                    if ($this->waitsForChoice($args['resource'], $args['record_id'] ?? null)) {
                         return ['waiting_for_user' => true];
                     }
 
@@ -252,6 +284,59 @@ final class AssistantAgent implements Agent, Conversational, HasTools
                 },
             ),
         ];
+    }
+
+    /** @return array{waiting_for_user?: bool, prepared?: bool, error?: string} */
+    private function offerActionChoice(Request $request, ActionProposalStore $actions): array
+    {
+        if ($this->draft !== null) {
+            return ['prepared' => true];
+        }
+
+        $args = $request->validate([
+            'resource' => 'required|string|max:150',
+            'record_id' => 'nullable|string|max:100',
+            'operations' => 'required|array|list|min:2|max:5',
+            'operations.*' => 'required|string|max:150|distinct:strict',
+        ]);
+        $resource = $args['resource'];
+        $recordId = $args['record_id'] ?? null;
+        $selection = $recordId === null && ($this->selection['resource'] ?? null) === $resource ? $this->selection : null;
+        $kind = $recordId !== null ? 'record' : ($selection === null ? 'resource' : 'selection');
+        $this->assertActionTarget($resource, $recordId, $kind);
+        if ($this->waitsForChoice($resource, $recordId)) {
+            return ['waiting_for_user' => true];
+        }
+
+        $this->reportProgress('checking_actions');
+        $native = app(NativeResourceActions::class);
+        $options = [];
+        foreach ($actions->describeActions($resource, $recordId, $selection) as $action) {
+            if (in_array($action['id'], $args['operations'], true) && $native->targetKind($action['id']) === $kind) {
+                $options[] = ['id' => $action['id'], 'label' => $action['label']];
+            }
+        }
+
+        if (count($options) < 2) {
+            return ['error' => 'At least two available native actions for the same target are required.'];
+        }
+
+        $this->actionChoice = [
+            'resource' => $resource,
+            'record_id' => $recordId,
+            'record_ids' => $selection === null ? [] : array_column($selection['records'], 'id'),
+            'options' => $options,
+        ];
+
+        return ['waiting_for_user' => true];
+    }
+
+    private function assertActionTarget(string $resource, ?string $recordId, string $kind): void
+    {
+        if ($this->actionTarget !== null && ($this->actionTarget['resource'] !== $resource
+            || $this->actionTarget['record_id'] !== $recordId || $this->actionTarget['kind'] !== $kind)) {
+            throw ValidationException::withMessages(['operation' => __('filament-ai-assistant::assistant.errors.action_choice_target')]);
+        }
     }
 
     /** @param array<string, string> $replace */
@@ -279,9 +364,9 @@ final class AssistantAgent implements Agent, Conversational, HasTools
         return true;
     }
 
-    private function waitsForRecordChoice(string $resource, ?string $recordId): bool
+    private function waitsForChoice(string $resource, ?string $recordId): bool
     {
-        if ($this->recordChoice !== null) {
+        if ($this->recordChoice !== null || $this->actionChoice !== null) {
             return true;
         }
 

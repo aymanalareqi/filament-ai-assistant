@@ -44,6 +44,11 @@
         },
         async submitMessage() {
             if (this.sending) return;
+            const actionChoiceId = this.$wire.actionChoice?.id;
+            if (actionChoiceId) {
+                await this.runMessageRequest(() => this.$wire.answerActionChoice(actionChoiceId));
+                return;
+            }
             this.syncPageContext();
             const table = this.activeTable();
             const all = table?.isTrackingDeselectedRecords === true;
@@ -201,6 +206,36 @@
                 </div>
             @endif
 
+            @if ($actionChoice)
+                <div class="fia-draft" wire:key="fia-action-choice-{{ $actionChoice['id'] }}" role="group"
+                    aria-labelledby="fia-action-choice-title-{{ $this->getId() }}">
+                    <div class="fia-draft-heading">
+                        <span class="fia-draft-mark" aria-hidden="true">
+                            <x-filament::icon icon="heroicon-o-question-mark-circle" class="fia-icon" />
+                        </span>
+                        <div>
+                            <h3 id="fia-action-choice-title-{{ $this->getId() }}">{{ __('filament-ai-assistant::assistant.choice.action_title') }}</h3>
+                            @if ($actionChoice['record_ids'] !== [])
+                                <p>{{ __('filament-ai-assistant::assistant.actions.selected_rows', ['count' => count($actionChoice['record_ids'])]) }}</p>
+                            @endif
+                        </div>
+                    </div>
+                    <div class="fia-choices">
+                        @foreach ($actionChoice['options'] as $option)
+                            <button type="button" class="fia-prompt" data-choice="{{ $actionChoice['id'] }}" data-operation="{{ $option['id'] }}"
+                                x-on:click="runMessageRequest(() => $wire.chooseAction($el.dataset.choice, $el.dataset.operation))"
+                                x-bind:disabled="sending" wire:loading.attr="disabled">
+                                <span dir="auto">{{ $option['label'] }}</span>
+                            </button>
+                        @endforeach
+                    </div>
+                    <button type="button" class="fia-record-toggle" data-choice="{{ $actionChoice['id'] }}"
+                        x-on:click="$wire.cancelActionChoice($el.dataset.choice)" wire:loading.attr="disabled">
+                        {{ __('filament-ai-assistant::assistant.choice.cancel') }}
+                    </button>
+                </div>
+            @endif
+
             @if ($draft)
                 @php($isAction = ($draft['kind'] ?? null) === 'action')
                 <div class="fia-draft">
@@ -260,9 +295,9 @@
             <div class="fia-input">
                 <label class="fia-sr-only" for="fia-message-{{ $this->getId() }}">{{ __('filament-ai-assistant::assistant.message') }}</label>
                 <textarea id="fia-message-{{ $this->getId() }}" x-ref="message" wire:model="message"
-                    wire:loading.attr="readonly" wire:target="send" rows="2" maxlength="2000" dir="auto"
+                    wire:loading.attr="readonly" wire:target="send, answerActionChoice, chooseAction" rows="2" maxlength="2000" dir="auto"
                     @disabled($recordChoice !== null)
-                    placeholder="{{ __('filament-ai-assistant::assistant.placeholder') }}" @error('message') aria-invalid="true" aria-describedby="fia-error-{{ $this->getId() }}" @enderror></textarea>
+                    placeholder="{{ __('filament-ai-assistant::assistant.'.($actionChoice ? 'choice.action_placeholder' : 'placeholder')) }}" @error('message') aria-invalid="true" aria-describedby="fia-error-{{ $this->getId() }}" @enderror></textarea>
                 <button type="submit" class="fia-send" wire:loading.attr="disabled"
                     x-bind:disabled="sending || Boolean($wire.recordChoice)" @disabled($recordChoice !== null)
                     title="{{ __('filament-ai-assistant::assistant.send') }}" aria-label="{{ __('filament-ai-assistant::assistant.send') }}">

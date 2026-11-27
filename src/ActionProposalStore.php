@@ -11,7 +11,6 @@ use Filament\Resources\Pages\ListRecords;
 use Filament\Resources\Pages\Page;
 use Filament\Resources\Pages\ViewRecord;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -43,7 +42,15 @@ final class ActionProposalStore
             $this->invalid('action_unavailable');
         }
 
-        return $this->native->describe($resource, $record, ($selection['resource'] ?? null) === $slug ? array_column($selection['records'], 'id') : []);
+        $ids = ($selection['resource'] ?? null) === $slug ? array_column($selection['records'], 'id') : [];
+        $selectedRecords = $ids === [] ? collect() : $this->records($resource, $ids);
+        if (! $selectedRecords->every(fn (Model $selected): bool => $this->canSee($resource, $selected))) {
+            $this->invalid('selection_required');
+        }
+
+        return $this->native->describe($resource, $record, $ids, fn (Action $action, string $surface): bool => $this->canAct(
+            $resource, $action, $surface === 'bulk' ? $selectedRecords : collect($record === null ? [] : [$record]),
+        ));
     }
 
     /**
@@ -132,7 +139,7 @@ final class ActionProposalStore
             ]),
             'label' => $recordId === null ? $resource::getPluralModelLabel() : $resource::getModelLabel(),
             'records' => $records->map(fn (Model $record): array => $this->recordPreview($resource, $record))->all(),
-            'warning' => $this->deleteWarning($resource, $action, $records->first()),
+            'warning' => $this->nativeDeleteDescription($action),
         ];
     }
 
@@ -330,17 +337,13 @@ final class ActionProposalStore
         };
     }
 
-    private function deleteWarning(string $resource, Action $action, ?Model $record): ?string
+    private function nativeDeleteDescription(Action $action): ?string
     {
-        if ($record === null || ! ($action instanceof DeleteAction || $action instanceof DeleteBulkAction)) {
+        if (! ($action instanceof DeleteAction || $action instanceof DeleteBulkAction)) {
             return null;
         }
 
-        $details = FilamentAiAssistantPlugin::current()->getDeleteWarning($resource);
-        $permanent = in_array(SoftDeletes::class, class_uses_recursive($record), true)
-            ? null : __('filament-ai-assistant::assistant.actions.permanent');
-
-        return implode(' ', array_filter([$permanent, $details])) ?: null;
+        return trim(html_entity_decode(strip_tags((string) $action->getModalDescription()), ENT_QUOTES | ENT_HTML5, 'UTF-8')) ?: null;
     }
 
     private function reviewKey(Page $page): string

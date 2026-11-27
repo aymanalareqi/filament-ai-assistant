@@ -2,6 +2,7 @@
 
 namespace Alareqi\FilamentAiAssistant;
 
+use Closure;
 use Filament\Actions\Action;
 use Filament\Actions\ActionGroup;
 use Filament\Actions\BulkAction;
@@ -46,6 +47,17 @@ final class NativeResourceActions
     public function requiresRecord(string $surface): bool
     {
         return in_array($surface, ['row', 'view', 'edit'], true);
+    }
+
+    public function targetKind(string $action): string
+    {
+        $surface = $this->surface($action);
+
+        return match (true) {
+            $surface === 'bulk' => 'selection',
+            $this->requiresRecord($surface) => 'record',
+            default => 'resource',
+        };
     }
 
     public function pageKey(string $surface): string
@@ -106,8 +118,12 @@ final class NativeResourceActions
         }
     }
 
-    /** @return list<array{id: string, label: string, surface: string, input: bool}> */
-    public function describe(string $resource, ?Model $record, array $ids): array
+    /**
+     * @param  list<string>  $ids
+     * @param  Closure(Action, string): bool  $canAct
+     * @return list<array{id: string, label: string, surface: string, input: bool}>
+     */
+    public function describe(string $resource, ?Model $record, array $ids, Closure $canAct): array
     {
         $result = [];
         $pages = [];
@@ -129,7 +145,7 @@ final class NativeResourceActions
             foreach (array_keys($this->actions($page, $surface)) as $name) {
                 $key = $surface.':'.$name;
                 $action = $this->resolve($page, $key, $record?->getKey());
-                if ($action !== null && $this->canReview($page, $key, $action)) {
+                if ($action !== null && $this->canReview($page, $key, $action) && $canAct($action, $surface)) {
                     $result[] = ['id' => $key, 'label' => $this->label($action), 'surface' => $surface, 'input' => $page->mountedActionHasSchema($action)];
                 }
             }
@@ -163,10 +179,22 @@ final class NativeResourceActions
         $bulk = $this->surface($key) === 'bulk';
 
         return ($plugin?->allowsNativeAction($page::getResource(), $key, $action) ?? false)
-            && ($bulk ? $action instanceof BulkAction && $action->shouldFetchSelectedRecords() : ! $action instanceof BulkAction)
+            && ($bulk ? $this->canReviewBulk($page, $action) : ! $action instanceof BulkAction)
             && $action->hasAction() && blank($action->getUrl()) && $action->isLivewireClickHandlerEnabled()
             && $action->isVisible() && ! $action->isDisabled() && $action->isAuthorized()
             && $page->mountedActionShouldOpenModal($action);
+    }
+
+    private function canReviewBulk(Page $page, Action $action): bool
+    {
+        if (! $page instanceof ListRecords || ! $action instanceof BulkAction || ! $action->shouldFetchSelectedRecords()) {
+            return false;
+        }
+
+        $table = $page->getTable();
+        $max = $table->getMaxSelectableRecords();
+
+        return ! $table->isSelectionDisabled() && ($max === null || count($page->selectedTableRecords) <= $max);
     }
 
     public function label(Action $action): string
@@ -191,7 +219,7 @@ final class NativeResourceActions
         if ($page instanceof ListRecords) {
             $table = $page->getTable();
             if ($surface === 'bulk') {
-                return $table->getFlatBulkActions();
+                return array_filter($this->flatten($table->getToolbarActions()), fn (Action $action): bool => $action instanceof BulkAction);
             }
             if ($surface === 'row') {
                 return $this->flatten($table->getRecordActions());

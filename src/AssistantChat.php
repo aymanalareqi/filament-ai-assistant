@@ -32,6 +32,10 @@ final class AssistantChat extends Component
     #[Locked]
     public ?array $recordChoice = null;
 
+    /** @var array{id: string, resource: string, record_id: ?string, record_ids: list<string>, options: list<array{id: string, label: string}>}|null */
+    #[Locked]
+    public ?array $actionChoice = null;
+
     public static function canAccess(): bool
     {
         return FilamentAiAssistantPlugin::current()?->canUse() ?? false;
@@ -86,12 +90,13 @@ final class AssistantChat extends Component
             return;
         }
 
-        $this->message = trim($this->message);
-        $this->validate(['message' => 'required|string|max:2000'], [
-            'message.required' => __('filament-ai-assistant::assistant.errors.message_required'),
-            'message.string' => __('filament-ai-assistant::assistant.errors.message_invalid'),
-            'message.max' => __('filament-ai-assistant::assistant.errors.message_too_long'),
-        ]);
+        if ($this->actionChoice !== null) {
+            $this->addError('message', __('filament-ai-assistant::assistant.errors.action_choice_pending'));
+
+            return;
+        }
+
+        $this->validateMessage();
 
         $currentRecord = $recordContextToken === null ? null : $context->resolve($recordContextToken);
         if ($recordContextToken !== null && $currentRecord === null) {
@@ -169,8 +174,123 @@ final class AssistantChat extends Component
         }
 
         $this->recordChoice = null;
+        $this->finishChoice(__('filament-ai-assistant::assistant.choice.cancelled_user'), __('filament-ai-assistant::assistant.choice.cancelled'));
+    }
+
+    public function chooseAction(ActionProposalStore $actions, string $choiceId, string $operation): void
+    {
+        $this->authorizeConversation();
         $this->resetErrorBag('message');
-        $this->appendTurn(__('filament-ai-assistant::assistant.choice.cancelled_user'), __('filament-ai-assistant::assistant.choice.cancelled'));
+        $choice = $this->pendingActionChoice($choiceId);
+        if ($choice === null) {
+            return;
+        }
+
+        $options = array_column($choice['options'], 'label', 'id');
+        if (! isset($options[$operation])) {
+            $this->addError('message', __('filament-ai-assistant::assistant.errors.choose_listed_action'));
+
+            return;
+        }
+
+        try {
+            $selection = $choice['record_ids'] === [] ? null : $actions->selectionFor($choice['resource'], $choice['record_ids']);
+            $this->draft = $actions->prepare($choice['resource'], $operation, $choice['record_id'], $selection);
+        } catch (ValidationException $exception) {
+            $this->addError('message', $exception->getMessage());
+
+            return;
+        }
+
+        $this->actionChoice = null;
+        $this->finishChoice($options[$operation], __('filament-ai-assistant::assistant.actions.prepared'));
+    }
+
+    public function answerActionChoice(
+        ResourceRegistry $resources,
+        DraftStore $drafts,
+        CurrentRecordContext $context,
+        ActionProposalStore $actions,
+        string $choiceId,
+    ): void {
+        $this->authorizeConversation();
+        $this->resetErrorBag('message');
+        $choice = $this->pendingActionChoice($choiceId);
+        if ($choice === null) {
+            return;
+        }
+
+        $this->validateMessage();
+
+        try {
+            $resource = $resources->resource($choice['resource']);
+            $selection = $choice['record_ids'] === [] ? null : $actions->selectionFor($choice['resource'], $choice['record_ids']);
+            $record = $choice['record_id'] === null ? null : $context->forRecord($choice['resource'], $choice['record_id']);
+        } catch (ValidationException $exception) {
+            $this->addError('message', $exception->getMessage());
+
+            return;
+        }
+
+        if ($choice['record_id'] !== null && $record === null) {
+            $this->addError('message', __('filament-ai-assistant::assistant.errors.choice_unavailable'));
+
+            return;
+        }
+
+        $this->answer(
+            $resources,
+            $drafts,
+            $this->message,
+            $record,
+            currentList: ['resource' => $choice['resource'], 'label' => $resource::getPluralModelLabel()],
+            selection: $selection,
+            actionTarget: [
+                'resource' => $choice['resource'],
+                'record_id' => $choice['record_id'],
+                'kind' => $record !== null ? 'record' : ($selection === null ? 'resource' : 'selection'),
+            ],
+        );
+    }
+
+    public function cancelActionChoice(string $choiceId): void
+    {
+        $this->authorizeConversation();
+        if ($this->actionChoice === null || $this->actionChoice['id'] !== $choiceId) {
+            return;
+        }
+
+        $this->actionChoice = null;
+        $this->finishChoice(__('filament-ai-assistant::assistant.choice.cancelled_user'), __('filament-ai-assistant::assistant.choice.cancelled'));
+    }
+
+    /** @return array{id: string, resource: string, record_id: ?string, record_ids: list<string>, options: list<array{id: string, label: string}>}|null */
+    private function pendingActionChoice(string $choiceId): ?array
+    {
+        if ($this->actionChoice === null || $this->actionChoice['id'] !== $choiceId) {
+            $this->addError('message', __('filament-ai-assistant::assistant.errors.choose_listed_action'));
+
+            return null;
+        }
+
+        return $this->actionChoice;
+    }
+
+    private function validateMessage(): void
+    {
+        $this->message = trim($this->message);
+        $this->validate(['message' => 'required|string|max:2000'], [
+            'message.required' => __('filament-ai-assistant::assistant.errors.message_required'),
+            'message.string' => __('filament-ai-assistant::assistant.errors.message_invalid'),
+            'message.max' => __('filament-ai-assistant::assistant.errors.message_too_long'),
+        ]);
+    }
+
+    private function finishChoice(string $userText, string $assistantText): void
+    {
+        $this->reset('message');
+        $this->resetErrorBag('message');
+        $this->appendTurn($userText, $assistantText);
         $this->saveConversation();
         $this->dispatch('filament-ai-assistant-response');
     }
@@ -179,9 +299,18 @@ final class AssistantChat extends Component
      * @param  array{resource: string, record_id: string, resource_label: string, record_label: string, can_edit: bool}|null  $currentRecord
      * @param  array{resource: string, label: string}|null  $currentList
      * @param  array{resource: string, label: string, records: list<array{id: string, label: string}>}|null  $selection
+     * @param  array{resource: string, record_id: ?string, kind: string}|null  $actionTarget
      */
-    private function answer(ResourceRegistry $resources, DraftStore $drafts, string $originalMessage, ?array $currentRecord, bool $recordExplicitlyChosen = false, ?array $currentList = null, ?array $selection = null): void
-    {
+    private function answer(
+        ResourceRegistry $resources,
+        DraftStore $drafts,
+        string $originalMessage,
+        ?array $currentRecord,
+        bool $recordExplicitlyChosen = false,
+        ?array $currentList = null,
+        ?array $selection = null,
+        ?array $actionTarget = null,
+    ): void {
         $key = 'filament-ai-assistant:'.Filament::getCurrentPanel()->getId().':'.Filament::auth()->id();
 
         if (RateLimiter::tooManyAttempts($key, 8)) {
@@ -201,6 +330,7 @@ final class AssistantChat extends Component
             $currentList,
             $selection,
             $this->progressStream(),
+            $actionTarget,
         );
 
         try {
@@ -220,9 +350,12 @@ final class AssistantChat extends Component
         $this->draft = $agent->draft();
         $choice = $agent->recordChoice();
         $this->recordChoice = $choice === null ? null : ['id' => (string) Str::uuid(), ...$choice];
+        $actionChoice = $agent->actionChoice();
+        $this->actionChoice = $actionChoice === null ? null : ['id' => (string) Str::uuid(), ...$actionChoice];
 
         $text = match (true) {
             $choice !== null => __('filament-ai-assistant::assistant.choice.prompt'),
+            $actionChoice !== null => __('filament-ai-assistant::assistant.choice.action_prompt'),
             $this->draft !== null => __('filament-ai-assistant::assistant.'.(($this->draft['kind'] ?? null) === 'action' ? 'actions.prepared' : 'prepared')),
             default => Str::limit($response->text, 4000),
         };
@@ -276,6 +409,7 @@ final class AssistantChat extends Component
             'history' => $this->history,
             'draft' => $this->draft,
             'record_choice' => $this->recordChoice,
+            'action_choice' => $this->actionChoice,
             'choice_message' => $choiceMessage,
         ]);
     }
@@ -285,7 +419,7 @@ final class AssistantChat extends Component
         $this->authorizeConversation();
 
         session()->forget($this->conversationKey());
-        $this->reset('message', 'history', 'draft', 'recordChoice');
+        $this->reset('message', 'history', 'draft', 'recordChoice', 'actionChoice');
         $this->resetErrorBag();
     }
 
@@ -320,6 +454,7 @@ final class AssistantChat extends Component
         $conversation = session()->get($this->conversationKey(), []);
         $this->history = $conversation['history'] ?? [];
         $this->recordChoice = $conversation['record_choice'] ?? null;
+        $this->actionChoice = $conversation['action_choice'] ?? null;
         $draft = $conversation['draft'] ?? null;
         $actions = app(ActionProposalStore::class);
         $store = ($draft['kind'] ?? null) === 'action' ? $actions : $drafts;
